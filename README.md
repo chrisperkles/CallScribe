@@ -1,74 +1,110 @@
 # CallScribe
 
-A menu bar button that records your Mac's audio — both sides of a call — and
-transcribes it locally with whisper.cpp the moment you stop.
+A menu bar button that records your Mac — both sides of a call, or a meeting in
+the room — and transcribes it locally the moment you stop. Nothing is uploaded;
+the speech engine runs on your own machine.
 
-No virtual audio driver, no output-device switching. It uses the Core Audio
-process-tap API (macOS 14.4+) to tap system output directly, and records your
-microphone as a **separate track**, so the transcript can tell you apart from
-the other side.
+## For colleagues: installing
 
-## Install
+1. Open the DMG you were sent and drag **CallScribe** to **Applications**.
+2. Launch it. A microphone icon appears in the menu bar, top right.
+3. Click it once and choose a speech model. It downloads once (about 550 MB) and
+   is reused forever after.
+4. The first recording asks for two macOS permissions — **Microphone** and
+   **audio recording**. Both are required; click Allow.
+
+That's it. CallScribe starts automatically with your Mac from then on.
+
+## Using it
+
+Click the menu bar icon and pick one:
+
+- **Record Call** — for Zoom, Teams, Meet, FaceTime, a phone call on speaker.
+  Captures the other side (what your Mac plays) and you (your microphone) as two
+  separate tracks.
+- **Record Meeting (room)** — for people sitting together. Microphone only,
+  transcribed without guessing who said what.
+
+Click **Stop & Transcribe** when you're done. A notification appears when the
+transcript is ready, usually well under a minute.
+
+Everything lands in `~/Recordings/CallScribe/<date and time>/`:
+
+```
+them.caf         the other side, untouched
+me.caf           you, untouched
+transcript.txt   merged, chronological, labelled
+```
+
+Calls come out like this:
+
+```
+[00:00:00] Them:
+  Could you send the revised quote before Friday?
+
+[00:00:09] Me:
+  Yes — I'll have it over to you Thursday morning.
+```
+
+## Getting good transcripts
+
+- **Wear headphones on calls.** On speakers your microphone also picks up the
+  other side. CallScribe detects and removes most of that echo, but headphones
+  remove the problem entirely.
+- **For meetings in a room, put the Mac near whoever is speaking**, or use an
+  external microphone. A laptop at the far end of a table gives thin audio, and
+  thin audio transcribes badly.
+- Language is auto-detected per recording. If your calls are always German,
+  pinning it improves accuracy: `defaults write at.skyline.CallScribe language de`
+
+## Before you record other people
+
+Recording a conversation is regulated differently depending on where everyone
+is. In Austria and most of the EU, tell the other participants and get their
+agreement. CallScribe does not announce itself.
+
+## Settings
 
 ```sh
-./build.sh              # builds, signs and installs to /Applications
-open /Applications/CallScribe.app
+defaults write at.skyline.CallScribe language de          # or "auto"
+defaults write at.skyline.CallScribe recordingsRoot ~/Documents/Calls
+defaults write at.skyline.CallScribe modelPath /path/to/ggml-model.bin
 ```
 
-Requirements (already present if `./build.sh` ran):
+Re-read at the start of every recording — no restart needed.
 
-```sh
-brew install ffmpeg whisper-cpp
-# a model, e.g.:
-curl -L -o ~/whisper-models/ggml-large-v3-turbo.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
-```
-
-On first recording macOS asks for **Microphone** and **Audio Recording**
-permission. Both live in System Settings › Privacy & Security.
-
-## Use
-
-Click the 🎤 in the menu bar → **Start Recording**. The icon turns into a red
-record dot and the menu shows elapsed time. Click → **Stop & Transcribe**.
-Transcription runs in the background; you get a notification when it's done.
-
-Output lands in `~/Recordings/CallScribe/<timestamp>/`:
-
-```
-them.caf         raw system audio (the other side)
-me.caf           raw microphone (you)
-them.srt, me.srt per-track timestamps
-transcript.txt   merged, speaker-labelled, chronological
-```
-
-## Verify
+## If something goes wrong
 
 ```sh
 /Applications/CallScribe.app/Contents/MacOS/CallScribe --selftest 10
 ```
 
-Records 10 seconds, transcribes, prints the result. Use this if something looks
-wrong — it reports tool paths and permission status before recording.
+Records ten seconds, transcribes it, and prints a full diagnostic: which engine
+and model it used, whether permissions were granted, and the measured audio
+level of each track. Add `--meeting` to test room mode.
 
-## Configure
+---
+
+## For maintainers
+
+Self-contained by design: the speech engine is a statically linked `whisper-cli`
+(2.9 MB, Metal shaders embedded) built by `vendor-whisper.sh` and shipped inside
+the bundle. There is no Homebrew, ffmpeg, or Python dependency — audio conversion
+uses AVFoundation directly.
 
 ```sh
-defaults write at.skyline.CallScribe modelPath ~/whisper-models/ggml-medium.bin
-defaults write at.skyline.CallScribe language de       # or "auto" (default)
-defaults write at.skyline.CallScribe recordingsRoot ~/Documents/Calls
-defaults write at.skyline.CallScribe whisperPath /opt/homebrew/bin/whisper-cli
-defaults write at.skyline.CallScribe ffmpegPath /opt/homebrew/bin/ffmpeg
+./build.sh          # build + install locally to /Applications
+./release.sh        # notarized DMG + signed Sparkle appcast
 ```
 
-Settings are re-read at the start of every recording — no restart needed.
+Building needs Xcode Command Line Tools and `cmake` (`brew install cmake`).
+See [RELEASING.md](RELEASING.md) for certificates, notarization and hosting.
 
-## Notes
-
-- Use headphones. On speakers, the mic picks up the far end too and both tracks
-  transcribe the same words.
-- Recording another person is regulated differently by jurisdiction. In Austria
-  and most of the EU, get consent.
-- `build.sh` signs with your Apple Development certificate when one exists, which
-  keeps the granted permissions across rebuilds. Ad-hoc signing works too, but
-  macOS re-prompts after every build.
+| Source | Role |
+| --- | --- |
+| `SystemAudioRecorder.swift` | Core Audio process tap — system output, no virtual driver |
+| `MicRecorder.swift` | Microphone, recorded to a separate track |
+| `AudioPrep.swift` | Native 16 kHz mono conversion, level analysis, normalization |
+| `Transcriber.swift` | whisper.cpp, SRT parsing, echo suppression, merge |
+| `ModelStore.swift` | First-run model download |
+| `Updater.swift` | Sparkle in-place updates |

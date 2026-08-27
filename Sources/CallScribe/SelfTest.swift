@@ -1,8 +1,8 @@
 import Foundation
 import AVFoundation
 
-/// `CallScribe --selftest [seconds]` — records, transcribes and prints the result
-/// without touching the menu bar. Used to verify permissions and tool paths.
+/// `CallScribe --selftest [seconds] [--meeting]` — records, transcribes and prints
+/// the result without touching the menu bar. Used to verify permissions and setup.
 enum SelfTest {
 
     static var isRequested: Bool {
@@ -15,12 +15,17 @@ enum SelfTest {
             .dropFirst()
             .compactMap(Double.init)
             .first ?? 8
+        let mode: RecordingMode = CommandLine.arguments.contains("--meeting") ? .meeting : .call
 
         let settings = Settings.load()
+        print("mode:    \(mode.rawValue)")
         print("whisper: \(settings.whisperPath)")
-        print("ffmpeg:  \(settings.ffmpegPath)")
-        print("model:   \(settings.modelPath)")
-        if let missing = settings.missingDependency {
+
+        guard let model = ModelStore.locateExisting(preferring: settings.modelPath) else {
+            fail("No model found. Open CallScribe and complete the one-time setup, or place a ggml-*.bin in ~/whisper-models.")
+        }
+        print("model:   \(model.path)")
+        if let missing = settings.missingDependency(modelURL: model) {
             fail(missing)
         }
 
@@ -36,33 +41,41 @@ enum SelfTest {
             let granted = MicRecorder.requestAccessSynchronously()
             print("microphone access: \(granted ? "granted" : "DENIED")")
 
-            try systemAudio.start(writingTo: directory.appendingPathComponent("them.caf"))
-            print("system tap running…")
+            if mode.capturesSystemAudio {
+                try systemAudio.start(writingTo: directory.appendingPathComponent("them.caf"))
+                print("system tap running…")
+            }
             if granted {
                 try mic.start(writingTo: directory.appendingPathComponent("me.caf"))
                 print("mic running…")
             }
 
-            print("recording \(Int(seconds))s — play something now")
+            print("recording \(Int(seconds))s — talk, or play something")
             Thread.sleep(forTimeInterval: seconds)
 
             if let error = systemAudio.stop() { fail("system audio: \(explain(error))") }
             if let error = mic.stop() { fail("mic: \(explain(error))") }
 
-            for name in ["them.caf", "me.caf"] {
-                let url = directory.appendingPathComponent(name)
-                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-                let size = (attributes?[.size] as? Int) ?? 0
-                print("\(name): \(size) bytes")
+            var tracks: [Transcriber.Track] = []
+            if mode.capturesSystemAudio {
+                tracks.append(.init(label: "Them", url: directory.appendingPathComponent("them.caf")))
+            }
+            tracks.append(.init(label: mode.micLabel, url: directory.appendingPathComponent("me.caf")))
+            tracks = tracks.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+
+            for track in tracks {
+                let probe = directory.appendingPathComponent("probe-\(track.label).wav")
+                let result = try AudioPrep.prepare(track.url, to: probe)
+                print(String(format: "%@: %.1fs, peak %.3f, active %.1f%% -> %@",
+                             track.label, result.duration, result.peak,
+                             result.activeFraction * 100,
+                             result.hasSpeech ? "transcribe" : "skip (silent)"))
+                try? FileManager.default.removeItem(at: probe)
             }
 
-            let tracks = [
-                Transcriber.Track(label: "Them", url: directory.appendingPathComponent("them.caf")),
-                Transcriber.Track(label: "Me", url: directory.appendingPathComponent("me.caf")),
-            ].filter { FileManager.default.fileExists(atPath: $0.url.path) }
-
             print("transcribing…")
-            let transcript = try Transcriber(settings: settings).run(tracks: tracks, in: directory)
+            let transcriber = Transcriber(settings: settings, modelPath: model.path)
+            let transcript = try transcriber.run(tracks: tracks, in: directory)
             print("\n--- \(transcript.path) ---")
             print((try? String(contentsOf: transcript, encoding: .utf8)) ?? "(unreadable)")
             exit(0)

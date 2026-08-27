@@ -1,10 +1,36 @@
 import Foundation
 
+/// What we're recording. The difference matters for both capture and labelling.
+enum RecordingMode: String, CaseIterable, Identifiable {
+    /// A call: the far end arrives as system audio, you arrive on the mic.
+    case call
+    /// Everyone is in the room: microphone only, no speaker attribution.
+    case meeting
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .call: return "Record Call"
+        case .meeting: return "Record Meeting (room)"
+        }
+    }
+
+    var capturesSystemAudio: Bool { self == .call }
+
+    /// Label for the microphone track in the transcript.
+    var micLabel: String {
+        switch self {
+        case .call: return "Me"
+        case .meeting: return "Room"
+        }
+    }
+}
+
 /// Paths and options, overridable with `defaults write at.skyline.CallScribe <key> <value>`.
 struct Settings {
     var whisperPath: String
-    var modelPath: String
-    var ffmpegPath: String
+    var modelPath: String?
     var language: String
     var recordingsRoot: URL
 
@@ -13,31 +39,32 @@ struct Settings {
         let home = FileManager.default.homeDirectoryForCurrentUser
 
         return Settings(
-            whisperPath: defaults.string(forKey: "whisperPath")
-                ?? firstExisting(["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"])
-                ?? "/opt/homebrew/bin/whisper-cli",
-            modelPath: defaults.string(forKey: "modelPath")
-                ?? home.appendingPathComponent("whisper-models/ggml-large-v3-turbo.bin").path,
-            ffmpegPath: defaults.string(forKey: "ffmpegPath")
-                ?? firstExisting(["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"])
-                ?? "/opt/homebrew/bin/ffmpeg",
+            whisperPath: defaults.string(forKey: "whisperPath") ?? bundledWhisper(),
+            modelPath: defaults.string(forKey: "modelPath"),
             language: defaults.string(forKey: "language") ?? "auto",
             recordingsRoot: defaults.string(forKey: "recordingsRoot").map { URL(fileURLWithPath: $0) }
                 ?? home.appendingPathComponent("Recordings/CallScribe")
         )
     }
 
-    /// Human-readable reason the pipeline can't run, or nil if everything is in place.
-    var missingDependency: String? {
-        let fm = FileManager.default
-        if !fm.isExecutableFile(atPath: whisperPath) { return "whisper-cli not found at \(whisperPath)" }
-        if !fm.isExecutableFile(atPath: ffmpegPath) { return "ffmpeg not found at \(ffmpegPath)" }
-        if !fm.fileExists(atPath: modelPath) { return "Whisper model not found at \(modelPath)" }
-        return nil
+    /// The statically linked whisper-cli shipped inside the app, falling back to
+    /// a Homebrew install when running from a bare `swift build`.
+    static func bundledWhisper() -> String {
+        if let bundled = Bundle.main.url(forResource: "whisper-cli", withExtension: nil, subdirectory: "bin"),
+           FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled.path
+        }
+        let fallbacks = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
+        return fallbacks.first { FileManager.default.isExecutableFile(atPath: $0) } ?? fallbacks[0]
     }
 
-    private static func firstExisting(_ paths: [String]) -> String? {
-        paths.first { FileManager.default.isExecutableFile(atPath: $0) }
+    /// Human-readable reason the pipeline can't run, or nil if everything is in place.
+    func missingDependency(modelURL: URL?) -> String? {
+        if !FileManager.default.isExecutableFile(atPath: whisperPath) {
+            return "The speech engine is missing from the app bundle. Reinstall CallScribe."
+        }
+        if modelURL == nil { return "No speech model downloaded yet." }
+        return nil
     }
 }
 

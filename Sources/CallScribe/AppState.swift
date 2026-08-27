@@ -8,18 +8,19 @@ final class AppState: ObservableObject {
 
     enum Status: Equatable {
         case idle
-        case recording(since: Date)
+        case recording(mode: RecordingMode, since: Date)
         case transcribing(session: String)
         case failed(String)
     }
 
     @Published private(set) var status: Status = .idle
     @Published private(set) var recent: [URL] = []      // transcript files, newest first
+    @Published var models = ModelStore()
 
     private let systemAudio = SystemAudioRecorder()
     private let mic = MicRecorder()
     private var settings = Settings.load()
-    private var sessionDirectory: URL?
+    private var session: (directory: URL, mode: RecordingMode)?
 
     var isRecording: Bool {
         if case .recording = status { return true }
@@ -31,47 +32,58 @@ final class AppState: ObservableObject {
         return false
     }
 
+    var needsModel: Bool {
+        if case .ready = models.state { return false }
+        return true
+    }
+
     init() {
+        models.refresh(configured: settings.modelPath)
         loadRecent()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        LaunchAtLogin.enableOnFirstRun()
     }
 
     // MARK: - Actions
 
-    func toggle() {
-        if isRecording {
-            stop()
-        } else if !isBusy {
-            Task { await start() }
-        }
-    }
+    func start(mode: RecordingMode) async {
+        guard !isRecording, !isBusy else { return }
 
-    func start() async {
         settings = Settings.load()
-        if let missing = settings.missingDependency {
+        models.refresh(configured: settings.modelPath)
+
+        guard case .ready = models.state else {
+            status = .failed("Download a speech model first.")
+            return
+        }
+        if let missing = settings.missingDependency(modelURL: modelURL) {
             status = .failed(missing)
             return
         }
-
         guard await MicRecorder.requestAccess() else {
-            status = .failed("Microphone access denied — grant it in System Settings › Privacy & Security › Microphone.")
+            status = .failed("Microphone access denied — enable CallScribe in System Settings › Privacy & Security › Microphone.")
             return
         }
 
-        let name = Timestamps.sessionName(Date())
-        let directory = settings.recordingsRoot.appendingPathComponent(name)
+        let directory = settings.recordingsRoot
+            .appendingPathComponent(Timestamps.sessionName(Date()))
 
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try systemAudio.start(writingTo: directory.appendingPathComponent("them.caf"))
+
+            if mode.capturesSystemAudio {
+                try systemAudio.start(writingTo: directory.appendingPathComponent("them.caf"))
+            }
             do {
                 try mic.start(writingTo: directory.appendingPathComponent("me.caf"))
-            } catch {
-                // A missing or busy mic shouldn't cost you the call audio.
-                NSLog("CallScribe: mic unavailable, recording system audio only: \(error)")
+            } catch where mode == .call {
+                // In a call the far end still gets captured, so a dead mic is
+                // a degraded recording rather than a failed one.
+                NSLog("CallScribe: mic unavailable, system audio only: \(error)")
             }
-            sessionDirectory = directory
-            status = .recording(since: Date())
+
+            session = (directory, mode)
+            status = .recording(mode: mode, since: Date())
         } catch {
             systemAudio.stop()
             mic.stop()
@@ -81,11 +93,12 @@ final class AppState: ObservableObject {
     }
 
     func stop() {
-        guard isRecording, let directory = sessionDirectory else { return }
+        guard isRecording, let session else { return }
+        let (directory, mode) = session
 
         let systemError = systemAudio.stop()
         let micError = mic.stop()
-        sessionDirectory = nil
+        self.session = nil
 
         if let error = systemError ?? micError {
             status = .failed(explain(error))
@@ -93,28 +106,34 @@ final class AppState: ObservableObject {
         }
 
         status = .transcribing(session: directory.lastPathComponent)
+
         let settings = self.settings
+        guard let modelPath = modelURL?.path else {
+            status = .failed("No speech model available.")
+            return
+        }
 
         Task.detached(priority: .userInitiated) {
-            let transcriber = Transcriber(settings: settings)
-            let tracks = [
-                Transcriber.Track(label: "Them", url: directory.appendingPathComponent("them.caf")),
-                Transcriber.Track(label: "Me", url: directory.appendingPathComponent("me.caf")),
-            ].filter { FileManager.default.fileExists(atPath: $0.url.path) }
+            var tracks: [Transcriber.Track] = []
+            if mode.capturesSystemAudio {
+                tracks.append(.init(label: "Them", url: directory.appendingPathComponent("them.caf")))
+            }
+            tracks.append(.init(label: mode.micLabel, url: directory.appendingPathComponent("me.caf")))
+            tracks = tracks.filter { FileManager.default.fileExists(atPath: $0.url.path) }
 
             do {
-                let transcript = try transcriber.run(tracks: tracks, in: directory)
+                let transcriber = Transcriber(settings: settings, modelPath: modelPath)
+                _ = try transcriber.run(tracks: tracks, in: directory)
                 await MainActor.run {
                     self.status = .idle
                     self.loadRecent()
-                    self.notify(title: "Transcript ready",
-                                body: directory.lastPathComponent,
-                                open: transcript)
+                    self.notify(title: "Transcript ready", body: directory.lastPathComponent)
                 }
             } catch {
+                let message = explain(error)
                 await MainActor.run {
-                    self.status = .failed(explain(error))
-                    self.notify(title: "Transcription failed", body: explain(error), open: nil)
+                    self.status = .failed(message)
+                    self.notify(title: "Transcription failed", body: message)
                 }
             }
         }
@@ -133,12 +152,16 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    var modelURL: URL? {
+        if case .ready(let url) = models.state { return url }
+        return nil
+    }
+
     // MARK: - Helpers
 
     private func loadRecent() {
-        let root = settings.recordingsRoot
         let sessions = (try? FileManager.default.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: [.contentModificationDateKey],
+            at: settings.recordingsRoot, includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles])) ?? []
 
         recent = sessions
@@ -149,12 +172,11 @@ final class AppState: ObservableObject {
             .map { $0 }
     }
 
-    private func notify(title: String, body: String, open url: URL?) {
+    private func notify(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
-
 }
