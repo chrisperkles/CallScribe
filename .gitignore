@@ -1,5 +1,4 @@
 .build/
 build/
+vendor/
 .DS_Store
-vendor/whisper.cpp/
-dist/

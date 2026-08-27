@@ -156,7 +156,6 @@ struct PanelView: View {
                 .font(.callout)
                 .onChange(of: launchAtLogin) { _, value in LaunchAtLogin.setEnabled(value) }
 
-            CheckForUpdatesButton()
 
             Button("Quit CallScribe") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.link)
