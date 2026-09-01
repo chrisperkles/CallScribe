@@ -83,27 +83,31 @@ final class ModelStore: ObservableObject {
         try? FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
 
         let task = URLSession.shared.downloadTask(with: model.url) { [weak self] temporary, response, error in
+            // URLSession deletes `temporary` the moment this handler returns,
+            // so the move cannot be deferred to the main actor.
+            let outcome: State?
+            if let error {
+                outcome = (error as? URLError)?.code == .cancelled
+                    ? nil    // cancel() already reset the state
+                    : .failed(error.localizedDescription)
+            } else if let temporary,
+                      let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                do {
+                    try? FileManager.default.removeItem(at: destination)
+                    try FileManager.default.moveItem(at: temporary, to: destination)
+                    outcome = .ready(destination)
+                } catch {
+                    outcome = .failed(explain(error))
+                }
+            } else {
+                outcome = .failed("Download failed — check your internet connection.")
+            }
+
             Task { @MainActor in
                 guard let self else { return }
                 self.observation = nil
                 self.task = nil
-
-                if let error {
-                    self.state = .failed(error.localizedDescription)
-                    return
-                }
-                guard let temporary,
-                      let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                    self.state = .failed("Download failed — check your internet connection.")
-                    return
-                }
-                do {
-                    try? FileManager.default.removeItem(at: destination)
-                    try FileManager.default.moveItem(at: temporary, to: destination)
-                    self.state = .ready(destination)
-                } catch {
-                    self.state = .failed(explain(error))
-                }
+                if let outcome { self.state = outcome }
             }
         }
 

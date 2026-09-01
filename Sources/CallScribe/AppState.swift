@@ -42,6 +42,29 @@ final class AppState: ObservableObject {
         loadRecent()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         LaunchAtLogin.enableOnFirstRun()
+
+        // Closing the lid mid-recording would record a silent gap at best and,
+        // if the audio devices change across sleep, nothing at all afterwards.
+        // Finalize and transcribe instead; the transcript completes after wake.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isRecording else { return }
+                self.stop()
+            }
+        }
+
+        // Quitting mid-recording: tear the Core Audio tap down and finalize
+        // both files before the process exits, instead of crashing through it.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.systemAudio.stop()
+                self?.mic.stop()
+            }
+        }
     }
 
     // MARK: - Actions

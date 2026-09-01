@@ -8,7 +8,16 @@ import OSLog
 /// (macOS 14.4+). No virtual audio driver, no output-device switching: we create
 /// a private global tap, wrap it in a private aggregate device, and pull frames
 /// off that device's IOProc.
-final class SystemAudioRecorder {
+///
+/// The aggregate is clocked by the default output device, so when that device
+/// goes away mid-recording (headphones unplugged, sleep/wake with a different
+/// output) the capture is rebuilt on the new device and keeps writing to the
+/// same file.
+///
+/// @unchecked: control state is only touched on the main thread; the IOProc
+/// only reaches `file`/`format`/`converter`/`writeFailure` on `queue`, which is
+/// drained before any of them change.
+final class SystemAudioRecorder: @unchecked Sendable {
 
     enum RecorderError: LocalizedError {
         case osStatus(String, OSStatus)
@@ -34,6 +43,13 @@ final class SystemAudioRecorder {
     private var ioProcID: AudioDeviceIOProcID?
     private var file: AVAudioFile?
     private var format: AVAudioFormat?
+    private var converter: AVAudioConverter?
+
+    private var deviceListener: AudioObjectPropertyListenerBlock?
+    private var deviceListenerAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
 
     /// Set when the IOProc hits a write error, so `stop()` can surface it.
     private var writeFailure: Error?
@@ -47,6 +63,31 @@ final class SystemAudioRecorder {
     func start(writingTo url: URL) throws {
         precondition(!isRunning)
 
+        try startCapture(creatingFileAt: url)
+        registerDeviceListener()
+        isRunning = true
+    }
+
+    @discardableResult
+    func stop() -> Error? {
+        guard isRunning else { return nil }
+        isRunning = false
+
+        unregisterDeviceListener()
+        teardownCapture()
+        file = nil
+        converter = nil
+
+        defer { writeFailure = nil }
+        return writeFailure
+    }
+
+    // MARK: - Capture pipeline
+
+    /// Builds tap → aggregate → IOProc. With a URL it also opens the output
+    /// file; without one it re-attaches to an existing file after a device
+    /// change, converting if the new tap format differs.
+    private func startCapture(creatingFileAt url: URL? = nil) throws {
         let outputUID = try defaultOutputDeviceUID()
 
         // 1. A private, global tap: everything the machine plays, mixed to stereo.
@@ -103,12 +144,18 @@ final class SystemAudioRecorder {
         format = tapFormat
         log.info("Tap format: \(tapFormat.sampleRate) Hz, \(tapFormat.channelCount) ch")
 
-        let audioFile = try AVAudioFile(
-            forWriting: url,
-            settings: tapFormat.settings,
-            commonFormat: tapFormat.commonFormat,
-            interleaved: tapFormat.isInterleaved)
-        file = audioFile
+        if let url {
+            file = try AVAudioFile(
+                forWriting: url,
+                settings: tapFormat.settings,
+                commonFormat: tapFormat.commonFormat,
+                interleaved: tapFormat.isInterleaved)
+            converter = nil
+        } else if let file, tapFormat != file.processingFormat {
+            converter = AVAudioConverter(from: tapFormat, to: file.processingFormat)
+        } else {
+            converter = nil
+        }
 
         // 4. Pull frames.
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) {
@@ -125,15 +172,9 @@ final class SystemAudioRecorder {
             cleanUp()
             throw RecorderError.osStatus("AudioDeviceStart", status)
         }
-
-        isRunning = true
     }
 
-    @discardableResult
-    func stop() -> Error? {
-        guard isRunning else { return nil }
-        isRunning = false
-
+    private func teardownCapture() {
         if let ioProcID {
             AudioDeviceStop(aggregateID, ioProcID)
             AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
@@ -143,10 +184,36 @@ final class SystemAudioRecorder {
 
         // Draining the queue guarantees no IOProc block is still touching `file`.
         queue.sync {}
-        file = nil
+    }
 
-        defer { writeFailure = nil }
-        return writeFailure
+    // MARK: - Device changes
+
+    private func registerDeviceListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleDeviceChange()
+        }
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &deviceListenerAddress, .main, block)
+        deviceListener = block
+    }
+
+    private func unregisterDeviceListener() {
+        guard let deviceListener else { return }
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &deviceListenerAddress, .main, deviceListener)
+        self.deviceListener = nil
+    }
+
+    private func handleDeviceChange() {
+        guard isRunning else { return }
+        log.info("Default output device changed — rebuilding system capture")
+        teardownCapture()
+        do {
+            try startCapture()
+        } catch {
+            writeFailure = writeFailure ?? error
+            log.error("Could not resume system capture: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Internals
@@ -155,7 +222,11 @@ final class SystemAudioRecorder {
         guard let format, let file, writeFailure == nil else { return }
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: inputData) else { return }
         do {
-            try file.write(from: buffer)
+            if let converter {
+                try file.write(from: converter.convertLive(buffer))
+            } else {
+                try file.write(from: buffer)
+            }
         } catch {
             writeFailure = error
             log.error("System audio write failed: \(error.localizedDescription)")
