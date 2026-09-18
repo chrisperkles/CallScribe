@@ -45,6 +45,17 @@ Click the menu bar icon and choose:
 - **Record Meeting (room)** — people sitting together. Microphone only,
   transcribed without guessing who said what.
 
+You don't have to remember: when another app opens the microphone — a Zoom or
+Teams call, FaceTime, Meet in a browser tab — a small **Record this call?**
+popup appears in the top-right corner. **Record** starts a call recording,
+**Not now** (or waiting 25 seconds) makes it go away, and it asks once per call.
+Nothing is recorded unless you click. Turn it off with *Ask to record when a
+call starts* in the menu.
+
+The same popup comes back when the call app lets go of the microphone while
+you are recording: **Call ended — stop recording?** **Stop** transcribes right
+away; ignoring it keeps recording, so a false alarm never cuts a call short.
+
 **Stop & Transcribe** when done. A notification appears when the transcript is
 ready. Output lands in `~/Recordings/CallScribe/<date and time>/`:
 
@@ -114,6 +125,8 @@ same moment — which can never discard speech said while the other side was qui
 | `AudioPrep.swift` | Conversion, level analysis, normalization |
 | `Transcriber.swift` | whisper.cpp, SRT parsing, echo suppression, merge |
 | `ModelStore.swift` | First-run model download |
+| `CallDetector.swift` | Spots other apps opening the microphone |
+| `CallPrompt.swift` | The record / stop popup |
 
 The speech engine is a statically linked `whisper-cli` (2.9 MB, Metal shaders
 embedded) built by `vendor-whisper.sh` and copied into the bundle, so the app has

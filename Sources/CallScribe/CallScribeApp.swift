@@ -156,6 +156,9 @@ struct PanelView: View {
                 .font(.callout)
                 .onChange(of: launchAtLogin) { _, value in LaunchAtLogin.setEnabled(value) }
 
+            Toggle("Ask to record when a call starts", isOn: $state.detectCalls)
+                .toggleStyle(.checkbox)
+                .font(.callout)
 
             Button("Quit CallScribe") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.link)

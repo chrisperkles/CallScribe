@@ -17,8 +17,20 @@ final class AppState: ObservableObject {
     @Published private(set) var recent: [URL] = []      // transcript files, newest first
     @Published var models = ModelStore()
 
+    /// Offer to record when another app opens the microphone.
+    @Published var detectCalls = UserDefaults.standard.object(forKey: "detectCalls") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(detectCalls, forKey: "detectCalls")
+            updateCallDetection()
+        }
+    }
+
     private let systemAudio = SystemAudioRecorder()
     private let mic = MicRecorder()
+    private let callDetector = CallDetector()
+    private let callPrompt = CallPrompt()
+    /// One offer per call: set once we asked or a recording covered it.
+    private var callHandled = false
     private var settings = Settings.load()
     private var session: (directory: URL, mode: RecordingMode)?
 
@@ -65,12 +77,27 @@ final class AppState: ObservableObject {
                 self?.mic.stop()
             }
         }
+
+        callDetector.onCallStarted = { [weak self] _ in
+            // The mic came back, so a pending "call ended" question is moot.
+            self?.callPrompt.dismiss()
+            self?.offerRecording()
+        }
+        callDetector.onCallEnded = { [weak self] app in
+            self?.callHandled = false
+            self?.callPrompt.dismiss()
+            self?.offerStopping(after: app)
+        }
+        updateCallDetection()
     }
 
     // MARK: - Actions
 
     func start(mode: RecordingMode) async {
         guard !isRecording, !isBusy else { return }
+
+        callPrompt.dismiss()
+        if callDetector.activeApp != nil { callHandled = true }
 
         settings = Settings.load()
         models.refresh(configured: settings.modelPath)
@@ -117,6 +144,7 @@ final class AppState: ObservableObject {
 
     func stop() {
         guard isRecording, let session else { return }
+        callPrompt.dismiss()
         let (directory, mode) = session
 
         let systemError = systemAudio.stop()
@@ -151,6 +179,8 @@ final class AppState: ObservableObject {
                     self.status = .idle
                     self.loadRecent()
                     self.notify(title: "Transcript ready", body: directory.lastPathComponent)
+                    // A call that began while we were busy still deserves the question.
+                    self.offerRecording()
                 }
             } catch {
                 let message = explain(error)
@@ -178,6 +208,34 @@ final class AppState: ObservableObject {
     var modelURL: URL? {
         if case .ready(let url) = models.state { return url }
         return nil
+    }
+
+    // MARK: - Call detection
+
+    private func updateCallDetection() {
+        if detectCalls {
+            callDetector.start()
+        } else {
+            callDetector.stop()
+            callPrompt.dismiss()
+            callHandled = false
+        }
+    }
+
+    private func offerRecording() {
+        guard let app = callDetector.activeApp, !callHandled,
+              status == .idle, !needsModel else { return }
+
+        callHandled = true
+        callPrompt.show(.callStarted(app: app)) { [weak self] in
+            Task { await self?.start(mode: .call) }
+        }
+    }
+
+    /// Room recordings have nothing to do with whichever app held the mic.
+    private func offerStopping(after app: String) {
+        guard case .recording(mode: .call, _) = status else { return }
+        callPrompt.show(.callEnded(app: app)) { [weak self] in self?.stop() }
     }
 
     // MARK: - Helpers
