@@ -1,20 +1,21 @@
 import Foundation
 import AVFoundation
 import OSLog
+import os
 import ObjCExceptionCatcher
 
 /// Records the default input device to its own file, so the transcript can tell
 /// your voice apart from the other side of the call.
 ///
-/// @unchecked: control state is only touched on the main thread; the audio
-/// thread only reaches `file`/`writeFailure` through the tap block.
+/// @unchecked: control state is only touched on the main thread; the tap block
+/// gets its own reference to the file and reaches `writeFailure` under a lock.
 final class MicRecorder: @unchecked Sendable {
 
     private let log = Logger(subsystem: "at.skyline.CallScribe", category: "Mic")
     private var engine: AVAudioEngine?
     private var destination: URL?
     private var file: AVAudioFile?
-    private var writeFailure: Error?
+    private let writeFailure = OSAllocatedUnfairLock<Error?>(initialState: nil)
     private var configurationObserver: NSObjectProtocol?
 
     private(set) var isRunning = false
@@ -63,8 +64,10 @@ final class MicRecorder: @unchecked Sendable {
         file = nil
         destination = nil
 
-        defer { writeFailure = nil }
-        return writeFailure
+        return writeFailure.withLock { failure in
+            defer { failure = nil }
+            return failure
+        }
     }
 
     // MARK: - Internals
@@ -89,7 +92,12 @@ final class MicRecorder: @unchecked Sendable {
         tearDownEngine()
 
         let engine = AVAudioEngine()
-        let input = engine.inputNode
+        var input: AVAudioInputNode!
+        var exceptionError: NSError?
+        guard CSCatchObjCException({ input = engine.inputNode }, &exceptionError) else {
+            throw exceptionError ?? NSError(domain: "at.skyline.CallScribe", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "Could not attach to the microphone"])
+        }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(domain: "at.skyline.CallScribe", code: 1, userInfo: [
@@ -112,10 +120,11 @@ final class MicRecorder: @unchecked Sendable {
             ? nil
             : AVAudioConverter(from: format, to: file.processingFormat)
 
-        var exceptionError: NSError?
+        // The block holds the file itself rather than reading `self.file`, so
+        // a buffer still in flight after `stop()` never races the property.
         let installed = CSCatchObjCException({
             input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-                self?.write(buffer, through: converter)
+                self?.write(buffer, to: file, through: converter)
             }
             engine.prepare()
         }, &exceptionError)
@@ -158,13 +167,13 @@ final class MicRecorder: @unchecked Sendable {
             try attachAndStart()
             log.info("Mic capture restarted after a configuration change")
         } catch {
-            writeFailure = writeFailure ?? error
+            writeFailure.withLock { $0 = $0 ?? error }
             log.error("Mic restart after configuration change failed: \(error.localizedDescription)")
         }
     }
 
-    private func write(_ buffer: AVAudioPCMBuffer, through converter: AVAudioConverter?) {
-        guard let file, writeFailure == nil else { return }
+    private func write(_ buffer: AVAudioPCMBuffer, to file: AVAudioFile, through converter: AVAudioConverter?) {
+        guard writeFailure.withLock({ $0 == nil }) else { return }
         do {
             if let converter {
                 try file.write(from: converter.convertLive(buffer))
@@ -172,7 +181,7 @@ final class MicRecorder: @unchecked Sendable {
                 try file.write(from: buffer)
             }
         } catch {
-            writeFailure = error
+            writeFailure.withLock { $0 = error }
             log.error("Mic write failed: \(error.localizedDescription)")
         }
     }

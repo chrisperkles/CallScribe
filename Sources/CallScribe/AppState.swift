@@ -33,6 +33,10 @@ final class AppState: ObservableObject {
     private var callHandled = false
     private var settings = Settings.load()
     private var session: (directory: URL, mode: RecordingMode)?
+    /// `start` suspends for the permission check before status changes, so a
+    /// second click (or the call prompt firing at once) would otherwise start
+    /// the recorders twice and trip their `precondition(!isRunning)`.
+    private var isStarting = false
 
     var isRecording: Bool {
         if case .recording = status { return true }
@@ -94,7 +98,9 @@ final class AppState: ObservableObject {
     // MARK: - Actions
 
     func start(mode: RecordingMode) async {
-        guard !isRecording, !isBusy else { return }
+        guard !isRecording, !isBusy, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
 
         callPrompt.dismiss()
         if callDetector.activeApp != nil { callHandled = true }
