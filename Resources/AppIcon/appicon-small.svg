@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs>
+  <filter id="drop" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="14"/></filter>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#232850"/><stop offset="1" stop-color="#0B0D1C"/></linearGradient>
+  <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="214" y1="0" x2="810" y2="0">
+    <stop offset="0" stop-color="#FF8A4C"/><stop offset="0.4" stop-color="#FF3F6C"/><stop offset="0.55" stop-color="#FFD0DC"/><stop offset="1" stop-color="#FFFFFF"/>
+  </linearGradient>
+</defs>
+<rect x="100" y="114" width="824" height="824" rx="185" fill="#000" opacity=".38" filter="url(#drop)"/>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+<g fill="url(#ink)">
+  <rect x="214" y="352" width="104" height="320" rx="52"/>
+  <rect x="356" y="262" width="104" height="500" rx="52"/>
+  <rect x="498" y="362" width="312" height="104" rx="52"/>
+  <rect x="498" y="558" width="220" height="104" rx="52"/>
+</g>
+</svg>

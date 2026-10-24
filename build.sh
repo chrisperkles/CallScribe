@@ -36,6 +36,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Fram
 cp ".build/release/${APP_NAME}" "$APP/Contents/MacOS/${APP_NAME}"
 cp vendor/bin/whisper-cli "$APP/Contents/Resources/bin/whisper-cli"
 
+# The app icon (Resources/AppIcon/README.md): macOS 26 and later draw the
+# layered AppIcon.icon, compiled into Assets.car; older macOS the .icns, which
+# replaces actool's own fallback because ours has a simplified 16 and 32 px.
+xcrun actool --compile "$APP/Contents/Resources" --platform macosx --target-device mac \
+    --minimum-deployment-target 15.0 --app-icon AppIcon \
+    --output-partial-info-plist "$(mktemp -d)/AppIcon.plist" --enable-on-demand-resources NO \
+    --development-region en "$PWD/Resources/AppIcon/AppIcon.icon" > /dev/null
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+
 # Sparkle (in-app updates). Its XPC services are for sandboxed apps and its
 # headers for building against it: left out.
 SPARKLE_SRC=$(find .build/artifacts -type d -name Sparkle.framework -path "*macos*" | head -1)
@@ -58,6 +67,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconName</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
@@ -92,16 +103,16 @@ else
     # permission.
     IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
         | awk -F'"' '/Developer ID Application|Apple Development/ {print $2; exit}')
-    SIGN_FLAGS=()
+    SIGN_FLAGS=()   # expanded as ${SIGN_FLAGS[@]+…}: bash 3.2 calls an empty array unbound
 fi
 
 # Nested code first, then the framework, then the app itself.
 for code in "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app" "$SPARKLE"; do
-    codesign --force "${SIGN_FLAGS[@]}" --sign "${IDENTITY:--}" "$code"
+    codesign --force ${SIGN_FLAGS[@]+"${SIGN_FLAGS[@]}"} --sign "${IDENTITY:--}" "$code"
 done
-codesign --force "${SIGN_FLAGS[@]}" --entitlements CallScribe.entitlements \
+codesign --force ${SIGN_FLAGS[@]+"${SIGN_FLAGS[@]}"} --entitlements CallScribe.entitlements \
     --sign "${IDENTITY:--}" "$APP/Contents/Resources/bin/whisper-cli"
-codesign --force "${SIGN_FLAGS[@]}" --entitlements CallScribe.entitlements \
+codesign --force ${SIGN_FLAGS[@]+"${SIGN_FLAGS[@]}"} --entitlements CallScribe.entitlements \
     --identifier "$BUNDLE_ID" --sign "${IDENTITY:--}" "$APP"
 codesign --verify --deep --strict "$APP"
 
