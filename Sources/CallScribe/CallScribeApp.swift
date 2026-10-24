@@ -2,15 +2,19 @@ import SwiftUI
 
 @main
 struct CallScribeApp: App {
-    @StateObject private var state = AppState()
+    @StateObject private var state: AppState
+    @StateObject private var updater: Updater
 
     init() {
         if SelfTest.isRequested { SelfTest.run() }
+        let state = AppState()
+        _state = StateObject(wrappedValue: state)
+        _updater = StateObject(wrappedValue: Updater(state: state))
     }
 
     var body: some Scene {
         MenuBarExtra {
-            PanelView(state: state)
+            PanelView(state: state, updater: updater)
                 .frame(width: 320)
         } label: {
             Image(systemName: state.symbolName)
@@ -34,6 +38,7 @@ extension AppState {
 
 struct PanelView: View {
     @ObservedObject var state: AppState
+    @ObservedObject var updater: Updater
     @State private var elapsed = "00:00:00"
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
 
@@ -138,6 +143,21 @@ struct PanelView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if updater.waitingForIdle {
+                Label("The update installs once this recording is transcribed.", systemImage: "arrow.down.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let version = updater.available {
+                Button {
+                    updater.checkNow()
+                } label: {
+                    Label("Update to CallScribe \(version)…", systemImage: "arrow.down.circle.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+            }
+
             if !state.recent.isEmpty {
                 Menu("Recent Transcripts") {
                     ForEach(state.recent, id: \.self) { url in
@@ -159,6 +179,10 @@ struct PanelView: View {
             Toggle("Ask to record when a call starts", isOn: $state.detectCalls)
                 .toggleStyle(.checkbox)
                 .font(.callout)
+
+            Button("Check for Updates… (v\(updater.currentVersion))") { updater.checkNow() }
+                .buttonStyle(.link)
+                .disabled(!updater.canCheck)
 
             Button("Quit CallScribe") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.link)

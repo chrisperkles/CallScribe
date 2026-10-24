@@ -17,15 +17,10 @@ Everything runs on your machine. No account, no cloud, no audio leaves the Mac.
 
 Requires Apple Silicon and macOS 15 or newer.
 
-```sh
-git clone https://github.com/chrisperkles/CallScribe.git
-cd CallScribe
-./install.sh
-```
-
-The script installs what's missing (Xcode Command Line Tools, `cmake`), compiles
-the speech engine, builds the app and launches it. First run takes a few minutes;
-after that a microphone icon sits in the menu bar.
+Download `CallScribe-<version>.dmg` from the
+[latest release](https://github.com/chrisperkles/CallScribe/releases/latest),
+open it and drag CallScribe into Applications. A microphone icon appears in the
+menu bar.
 
 Then, in the app:
 
@@ -33,7 +28,27 @@ Then, in the app:
 2. Start a recording. macOS asks for **Microphone** and **audio recording**
    permission. Both are required.
 
-CallScribe starts with your Mac from then on. To update, `git pull && ./install.sh`.
+CallScribe starts with your Mac from then on.
+
+### Updates
+
+Once a day CallScribe checks for a new version. One it finds waits in the panel
+as **Update to CallScribe …** — click it, then *Install and Relaunch*. Never in
+the middle of a call: an update accepted while recording goes in once the
+transcript is done. *Check for Updates…* at the bottom of the panel checks now.
+
+### From source
+
+```sh
+git clone https://github.com/chrisperkles/CallScribe.git
+cd CallScribe
+./install.sh
+```
+
+The script installs what's missing (Xcode Command Line Tools, `cmake`), compiles
+the speech engine, builds the app and launches it. `./build.sh` rebuilds and
+reinstalls without the prerequisite checks. Releases are cut with `release.sh` —
+see [RELEASING.md](RELEASING.md).
 
 ## Using it
 
@@ -127,9 +142,8 @@ same moment — which can never discard speech said while the other side was qui
 | `ModelStore.swift` | First-run model download |
 | `CallDetector.swift` | Spots other apps opening the microphone |
 | `CallPrompt.swift` | The record / stop popup |
+| `Updater.swift` | In-app updates (Sparkle), held back while recording |
 
 The speech engine is a statically linked `whisper-cli` (2.9 MB, Metal shaders
 embedded) built by `vendor-whisper.sh` and copied into the bundle, so the app has
 no runtime dependency on Homebrew, ffmpeg or Python. The finished bundle is 6.5 MB.
-
-`./build.sh` rebuilds and reinstalls without re-running the prerequisite checks.
