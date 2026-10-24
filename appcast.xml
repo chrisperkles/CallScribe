@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>CallScribe</title>
+    <item>
+      <title>1.1.0</title>
+      <pubDate>Sat, 24 Oct 2026 08:10:43 GMT</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul><li>Offers to record when a call starts, and to stop when it ends.</li><li>Recordings survive sleep, audio device changes and quitting.</li><li>Crash fixes in the microphone recorder.</li><li>Updates now arrive in the app.</li></ul>]]></description>
+      <enclosure url="https://github.com/chrisperkles/CallScribe/releases/download/v1.1.0/CallScribe-1.1.0.dmg" sparkle:edSignature="RYEzHnKcDFMJuNq1MR8J+C1Ha/0EetYwud5NgRYgQBR1V0OgcSgvwGkTzA/J9jnKz7TSygVTfV04K1K464l6Dg==" length="2220224" type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
