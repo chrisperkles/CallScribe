@@ -3,6 +3,15 @@
   <channel>
     <title>CallScribe</title>
     <item>
+      <title>1.1.1</title>
+      <pubDate>Sat, 24 Oct 2026 13:43:16 GMT</pubDate>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul><li>CallScribe has an app icon now.</li></ul>]]></description>
+      <enclosure url="https://github.com/chrisperkles/CallScribe/releases/download/v1.1.1/CallScribe-1.1.1.dmg" sparkle:edSignature="88wiyj01OX8grQGlO7aXYcMY5cOWq57VAEW7da3mngNvyxzUOszDe7LeoumWqT0BDh4isoSNfvVurudYRYhGDQ==" length="4539351" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>1.1.0</title>
       <pubDate>Sat, 24 Oct 2026 08:10:43 GMT</pubDate>
       <sparkle:version>8</sparkle:version>
