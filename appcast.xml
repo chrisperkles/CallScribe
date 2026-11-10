@@ -3,6 +3,15 @@
   <channel>
     <title>CallScribe</title>
     <item>
+      <title>1.1.2</title>
+      <pubDate>Tue, 10 Nov 2026 18:38:32 GMT</pubDate>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>1.1.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul><li>Calls on a Bluetooth headset no longer record the other side at double speed.</li><li>If a recorder stops mid-call, the transcript is still made from what was recorded.</li></ul>]]></description>
+      <enclosure url="https://github.com/chrisperkles/CallScribe/releases/download/v1.1.2/CallScribe-1.1.2.dmg" sparkle:edSignature="KfEwiaOCqamwuFIzUsicAVDijf/MYTK7Vt+Ooh3G1BWdeGGHoKDQTRZRdrBespK2T1wQSBDfFiAebOMQOaPDBQ==" length="4562996" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>1.1.1</title>
       <pubDate>Sat, 24 Oct 2026 13:43:16 GMT</pubDate>
       <sparkle:version>11</sparkle:version>
