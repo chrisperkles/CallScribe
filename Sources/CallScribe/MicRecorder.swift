@@ -79,7 +79,7 @@ final class MicRecorder: @unchecked Sendable {
             // The input can change format between reading it and tapping it:
             // a Bluetooth headset switching profile as the mic opens does exactly
             // that. A second engine sees the settled format.
-            log.notice("Mic start failed, retrying on a fresh engine: \(error.localizedDescription)")
+            log.notice("Mic start failed, retrying on a fresh engine: \(error.localizedDescription, privacy: .public)")
             try startFreshEngine()
         }
     }
@@ -168,7 +168,7 @@ final class MicRecorder: @unchecked Sendable {
             log.info("Mic capture restarted after a configuration change")
         } catch {
             writeFailure.withLock { $0 = $0 ?? error }
-            log.error("Mic restart after configuration change failed: \(error.localizedDescription)")
+            log.error("Mic restart after configuration change failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -182,7 +182,7 @@ final class MicRecorder: @unchecked Sendable {
             }
         } catch {
             writeFailure.withLock { $0 = error }
-            log.error("Mic write failed: \(error.localizedDescription)")
+            log.error("Mic write failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

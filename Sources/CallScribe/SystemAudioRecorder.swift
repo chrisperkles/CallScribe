@@ -14,9 +14,14 @@ import OSLog
 /// output) the capture is rebuilt on the new device and keeps writing to the
 /// same file.
 ///
+/// Frames arrive at the aggregate's sample rate, which is the output device's,
+/// not the rate the tap reports. A Bluetooth headset in call mode runs at 24 or
+/// 16 kHz while the tap still says 48, so the rate is read from the aggregate
+/// and followed when it changes mid-recording.
+///
 /// @unchecked: control state is only touched on the main thread; the IOProc
-/// only reaches `file`/`format`/`converter`/`writeFailure` on `queue`, which is
-/// drained before any of them change.
+/// only reaches `file`/`format`/`converter`/`writeFailure` on `queue`, and
+/// `format`/`converter` only change inside `queue.sync`.
 final class SystemAudioRecorder: @unchecked Sendable {
 
     enum RecorderError: LocalizedError {
@@ -45,9 +50,19 @@ final class SystemAudioRecorder: @unchecked Sendable {
     private var format: AVAudioFormat?
     private var converter: AVAudioConverter?
 
+    /// The tap's own description: channel layout and sample type. Its rate
+    /// is replaced with the aggregate's (see `currentStreamFormat`).
+    private var tapDescription: AudioStreamBasicDescription?
+
     private var deviceListener: AudioObjectPropertyListenerBlock?
     private var deviceListenerAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+
+    private var rateListener: AudioObjectPropertyListenerBlock?
+    private var rateListenerAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyNominalSampleRate,
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain)
 
@@ -129,7 +144,9 @@ final class SystemAudioRecorder: @unchecked Sendable {
             throw RecorderError.osStatus("AudioHardwareCreateAggregateDevice", status)
         }
 
-        // 3. Ask the tap what it will hand us, and open a matching file.
+        // 3. Work out what the IOProc will hand us: the tap's sample type at
+        //    the aggregate's rate. Open a matching file, or convert to the one
+        //    already open.
         var asbd = AudioStreamBasicDescription()
         var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         var address = AudioObjectPropertyAddress(
@@ -137,25 +154,31 @@ final class SystemAudioRecorder: @unchecked Sendable {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
         status = AudioObjectGetPropertyData(tapID, &address, 0, nil, &size, &asbd)
-        guard status == noErr, let tapFormat = AVAudioFormat(streamDescription: &asbd) else {
+        guard status == noErr else {
             cleanUp()
             throw RecorderError.badTapFormat
         }
-        format = tapFormat
-        log.info("Tap format: \(tapFormat.sampleRate) Hz, \(tapFormat.channelCount) ch")
+        tapDescription = asbd
+        guard let streamFormat = currentStreamFormat() else {
+            cleanUp()
+            throw RecorderError.badTapFormat
+        }
+        log.notice("System audio: tap reports \(asbd.mSampleRate) Hz, device runs at \(streamFormat.sampleRate) Hz, \(streamFormat.channelCount) ch")
 
         if let url {
-            file = try AVAudioFile(
-                forWriting: url,
-                settings: tapFormat.settings,
-                commonFormat: tapFormat.commonFormat,
-                interleaved: tapFormat.isInterleaved)
-            converter = nil
-        } else if let file, tapFormat != file.processingFormat {
-            converter = AVAudioConverter(from: tapFormat, to: file.processingFormat)
-        } else {
-            converter = nil
+            do {
+                file = try AVAudioFile(
+                    forWriting: url,
+                    settings: streamFormat.settings,
+                    commonFormat: streamFormat.commonFormat,
+                    interleaved: streamFormat.isInterleaved)
+            } catch {
+                cleanUp()
+                throw error
+            }
         }
+        adopt(streamFormat)
+        registerRateListener()
 
         // 4. Pull frames.
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) {
@@ -212,7 +235,59 @@ final class SystemAudioRecorder: @unchecked Sendable {
             try startCapture()
         } catch {
             writeFailure = writeFailure ?? error
-            log.error("Could not resume system capture: \(error.localizedDescription)")
+            log.error("Could not resume system capture: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// The output device changed its rate without being swapped out, e.g. a
+    /// Bluetooth headset switching into call mode when the call app opens its
+    /// microphone. The tap and aggregate stay; only the format the frames are
+    /// read as (and the conversion to the file) changes.
+    private func registerRateListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleRateChange()
+        }
+        let status = AudioObjectAddPropertyListenerBlock(aggregateID, &rateListenerAddress, .main, block)
+        if status == noErr {
+            rateListener = block
+        } else {
+            log.error("Could not watch the output sample rate (OSStatus \(status))")
+        }
+    }
+
+    private func unregisterRateListener() {
+        guard let rateListener else { return }
+        AudioObjectRemovePropertyListenerBlock(aggregateID, &rateListenerAddress, .main, rateListener)
+        self.rateListener = nil
+    }
+
+    private func handleRateChange() {
+        guard isRunning, let streamFormat = currentStreamFormat() else { return }
+        let previous = queue.sync { format?.sampleRate }
+        guard streamFormat.sampleRate != previous else { return }
+        log.notice("Output sample rate changed from \(previous ?? 0) to \(streamFormat.sampleRate) Hz")
+        adopt(streamFormat)
+    }
+
+    /// The tap's sample type at the rate the aggregate actually runs at.
+    private func currentStreamFormat() -> AVAudioFormat? {
+        guard var asbd = tapDescription else { return nil }
+        if let rate = nominalSampleRate(of: aggregateID), rate > 0 {
+            asbd.mSampleRate = rate
+        }
+        return AVAudioFormat(streamDescription: &asbd)
+    }
+
+    /// Reads the IOProc's frames as `streamFormat` from now on, converting
+    /// when the open file has a different format.
+    private func adopt(_ streamFormat: AVAudioFormat) {
+        queue.sync {
+            format = streamFormat
+            if let file, streamFormat != file.processingFormat {
+                converter = AVAudioConverter(from: streamFormat, to: file.processingFormat)
+            } else {
+                converter = nil
+            }
         }
     }
 
@@ -229,11 +304,12 @@ final class SystemAudioRecorder: @unchecked Sendable {
             }
         } catch {
             writeFailure = error
-            log.error("System audio write failed: \(error.localizedDescription)")
+            log.error("System audio write failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func cleanUp() {
+        unregisterRateListener()
         if aggregateID != kAudioObjectUnknown {
             AudioHardwareDestroyAggregateDevice(aggregateID)
             aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -242,6 +318,18 @@ final class SystemAudioRecorder: @unchecked Sendable {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
+    }
+
+    private func nominalSampleRate(of device: AudioObjectID) -> Double? {
+        guard device != kAudioObjectUnknown else { return nil }
+        var rate = Float64(0)
+        var size = UInt32(MemoryLayout<Float64>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &rate)
+        return status == noErr ? rate : nil
     }
 
     private func defaultOutputDeviceUID() throws -> String {
