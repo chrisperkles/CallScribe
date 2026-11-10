@@ -7,6 +7,7 @@ struct CallScribeApp: App {
 
     init() {
         if SelfTest.isRequested { SelfTest.run() }
+        if Retranscribe.isRequested { Retranscribe.run() }
         let state = AppState()
         _state = StateObject(wrappedValue: state)
         _updater = StateObject(wrappedValue: Updater(state: state))

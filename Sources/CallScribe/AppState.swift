@@ -157,8 +157,27 @@ final class AppState: ObservableObject {
         let micError = mic.stop()
         self.session = nil
 
-        if let error = systemError ?? micError {
-            status = .failed(explain(error))
+        // A recorder that failed mid-call (a headset dropping out, say) has
+        // still written everything up to that point. Transcribe what exists
+        // and say what's missing, rather than discarding the whole call.
+        let captureProblem: String? = {
+            switch (systemError, micError) {
+            case (nil, nil): return nil
+            case (nil, let error?): return "The microphone stopped during the recording, so your side is incomplete (\(explain(error)))."
+            case (let error?, nil): return "System audio stopped during the recording, so the other side is incomplete (\(explain(error)))."
+            case (let system?, _?): return "Both recorders stopped during the recording, so it is incomplete (\(explain(system)))."
+            }
+        }()
+
+        var tracks: [Transcriber.Track] = []
+        if mode.capturesSystemAudio {
+            tracks.append(.init(label: "Them", url: directory.appendingPathComponent("them.caf")))
+        }
+        tracks.append(.init(label: mode.micLabel, url: directory.appendingPathComponent("me.caf")))
+        tracks = tracks.filter { Self.hasAudio(at: $0.url) }
+
+        guard !tracks.isEmpty else {
+            status = .failed(captureProblem ?? "Nothing was recorded.")
             return
         }
 
@@ -170,21 +189,20 @@ final class AppState: ObservableObject {
             return
         }
 
-        Task.detached(priority: .userInitiated) {
-            var tracks: [Transcriber.Track] = []
-            if mode.capturesSystemAudio {
-                tracks.append(.init(label: "Them", url: directory.appendingPathComponent("them.caf")))
-            }
-            tracks.append(.init(label: mode.micLabel, url: directory.appendingPathComponent("me.caf")))
-            tracks = tracks.filter { FileManager.default.fileExists(atPath: $0.url.path) }
-
+        Task.detached(priority: .userInitiated) { [tracks] in
             do {
                 let transcriber = Transcriber(settings: settings, modelPath: modelPath)
                 _ = try transcriber.run(tracks: tracks, in: directory)
                 await MainActor.run {
-                    self.status = .idle
                     self.loadRecent()
-                    self.notify(title: "Transcript ready", body: directory.lastPathComponent)
+                    if let captureProblem {
+                        // Keep the warning on screen: the transcript exists but has a hole in it.
+                        self.status = .failed("Transcript saved, but incomplete. " + captureProblem)
+                        self.notify(title: "Transcript ready, but incomplete", body: captureProblem)
+                    } else {
+                        self.status = .idle
+                        self.notify(title: "Transcript ready", body: directory.lastPathComponent)
+                    }
                     // A call that began while we were busy still deserves the question.
                     self.offerRecording()
                 }
@@ -196,6 +214,12 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// True when the file exists and holds more than a bare header.
+    private static func hasAudio(at url: URL) -> Bool {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        return size > 8192
     }
 
     func dismissError() {

@@ -117,6 +117,13 @@ Records ten seconds, transcribes it, and prints a diagnostic: engine and model i
 use, whether permissions were granted, and the measured level of each track. Add
 `--meeting` to test room mode.
 
+```sh
+/Applications/CallScribe.app/Contents/MacOS/CallScribe --transcribe ~/Recordings/CallScribe/"2026-11-10 14.01.18"
+```
+
+Rebuilds `transcript.txt` from the audio already in a session folder, for a
+recording whose transcription failed or that you repaired by hand.
+
 ## How it works
 
 macOS 14.4 added Core Audio *process taps*, which let an app read system output

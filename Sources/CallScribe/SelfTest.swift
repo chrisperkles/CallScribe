@@ -91,3 +91,60 @@ enum SelfTest {
         exit(1)
     }
 }
+
+/// `CallScribe --transcribe <session folder>` — (re)builds transcript.txt from
+/// the audio already in a session folder. For a recording whose transcription
+/// never ran or failed.
+enum Retranscribe {
+
+    static var isRequested: Bool {
+        CommandLine.arguments.contains("--transcribe")
+    }
+
+    static func run() -> Never {
+        guard let path = CommandLine.arguments
+            .drop(while: { $0 != "--transcribe" })
+            .dropFirst()
+            .first
+        else { fail("Usage: CallScribe --transcribe <session folder>") }
+
+        let directory = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        let settings = Settings.load()
+
+        guard let model = ModelStore.locateExisting(preferring: settings.modelPath) else {
+            fail("No model found. Open CallScribe and complete the one-time setup, or place a ggml-*.bin in ~/whisper-models.")
+        }
+        if let missing = settings.missingDependency(modelURL: model) {
+            fail(missing)
+        }
+
+        // A folder with them.caf is a call; a lone me.caf is a room recording.
+        let them = directory.appendingPathComponent("them.caf")
+        let me = directory.appendingPathComponent("me.caf")
+        let fm = FileManager.default
+        var tracks: [Transcriber.Track] = []
+        if fm.fileExists(atPath: them.path) {
+            tracks.append(.init(label: "Them", url: them))
+        }
+        if fm.fileExists(atPath: me.path) {
+            let mode: RecordingMode = tracks.isEmpty ? .meeting : .call
+            tracks.append(.init(label: mode.micLabel, url: me))
+        }
+        guard !tracks.isEmpty else { fail("No them.caf or me.caf in \(directory.path)") }
+
+        do {
+            print("transcribing \(tracks.map(\.label).joined(separator: " + "))…")
+            let transcriber = Transcriber(settings: settings, modelPath: model.path)
+            let transcript = try transcriber.run(tracks: tracks, in: directory)
+            print(transcript.path)
+            exit(0)
+        } catch {
+            fail(explain(error))
+        }
+    }
+
+    private static func fail(_ message: String) -> Never {
+        FileHandle.standardError.write(Data(("ERROR: " + message + "\n").utf8))
+        exit(1)
+    }
+}
