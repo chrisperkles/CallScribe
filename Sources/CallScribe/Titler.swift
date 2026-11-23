@@ -123,10 +123,14 @@ enum Titler {
         let lead = lead.trimmingCharacters(in: .whitespaces).lowercased()
         guard lead.count >= 3 else { return false }
         if notNames.contains(lead) { return true }
-        let name = userName.lowercased()
-        let words = name.split(separator: " ").map(String.init)
-        // "Chris" for "Christoph Perkles", "Christoph", "Christoph Perkles".
-        return lead == name || words.contains(lead) || (words.first?.hasPrefix(lead) ?? false)
+        let nameWords = userName.lowercased().split(separator: " ").map(String.init)
+        guard !nameWords.isEmpty else { return false }
+        // "Chris", "Christoph", "Perkles", "Chris Perkles" for "Christoph Perkles":
+        // every word of the lead is one of the user's names, or short for one.
+        return lead.split(separator: " ").allSatisfy { word in
+            let word = String(word)
+            return word.count >= 3 && nameWords.contains { $0 == word || $0.hasPrefix(word) }
+        }
     }
 }
 
