@@ -33,6 +33,13 @@ struct Settings {
     var modelPath: String?
     var language: String
     var recordingsRoot: URL
+    /// Ask the on-device Apple Intelligence model for a title and put it in the
+    /// folder name. Without Apple Intelligence the folder keeps its date name.
+    var nameRecordings: Bool
+    /// Replace the raw .caf recordings with AAC .m4a once the transcript exists.
+    var compressAudio: Bool
+    /// Spellings for names speech recognition keeps getting wrong.
+    var corrections: [Correction]
 
     static func load() -> Settings {
         let defaults = UserDefaults.standard
@@ -43,7 +50,10 @@ struct Settings {
             modelPath: defaults.string(forKey: "modelPath"),
             language: defaults.string(forKey: "language") ?? "auto",
             recordingsRoot: defaults.string(forKey: "recordingsRoot").map { URL(fileURLWithPath: $0) }
-                ?? home.appendingPathComponent("Recordings/CallScribe")
+                ?? home.appendingPathComponent("Recordings/CallScribe"),
+            nameRecordings: defaults.object(forKey: "nameRecordings") as? Bool ?? true,
+            compressAudio: defaults.object(forKey: "compressAudio") as? Bool ?? true,
+            corrections: Correction.parse(defaults.string(forKey: "corrections") ?? "")
         )
     }
 
@@ -69,11 +79,52 @@ struct Settings {
 }
 
 enum Timestamps {
+    static let format = "yyyy-MM-dd HH.mm.ss"
+
     /// Folder name for one recording session.
     static func sessionName(_ date: Date) -> String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
         return formatter.string(from: date)
+    }
+
+    static func date(fromSessionName name: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter.date(from: String(name.prefix(SessionFolder.stampLength)))
+    }
+}
+
+/// `defaults write at.skyline.CallScribe corrections "Lansing=Lenzing, Kai-Burg=KRAIBURG"`
+struct Correction: Sendable, Equatable {
+    let from: String
+    let to: String
+
+    /// Pairs separated by commas, semicolons or new lines.
+    static func parse(_ text: String) -> [Correction] {
+        text.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isNewline }).compactMap { pair in
+            let parts = pair.split(separator: "=", maxSplits: 1)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+            return Correction(from: parts[0], to: parts[1])
+        }
+    }
+
+    /// Whole words only, ignoring case: "Lansing" fixes "lansing" but not "Lansinger".
+    static func apply(_ corrections: [Correction], to text: String) -> String {
+        corrections.reduce(text) { text, correction in
+            let pattern = "(?<![\\p{L}\\p{N}])"
+                + NSRegularExpression.escapedPattern(for: correction.from)
+                + "(?![\\p{L}\\p{N}])"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                return text
+            }
+            return regex.stringByReplacingMatches(
+                in: text, range: NSRange(text.startIndex..., in: text),
+                withTemplate: NSRegularExpression.escapedTemplate(for: correction.to))
+        }
     }
 }
 

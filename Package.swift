@@ -18,7 +18,10 @@ let package = Package(
             path: "Sources/CallScribe",
             linkerSettings: [
                 // Sparkle.framework is copied into the bundle by build.sh.
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+                // Apple Intelligence titles (macOS 26+). Weak, so the app still
+                // launches on macOS 15, where the framework doesn't exist.
+                .unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels"])
             ]
         )
     ]

@@ -118,19 +118,17 @@ enum Retranscribe {
             fail(missing)
         }
 
-        // A folder with them.caf is a call; a lone me.caf is a room recording.
-        let them = directory.appendingPathComponent("them.caf")
-        let me = directory.appendingPathComponent("me.caf")
-        let fm = FileManager.default
+        // A folder with a "them" track is a call; a lone "me" is a room recording.
+        // Either may be the raw .caf or, once compressed, the .m4a.
         var tracks: [Transcriber.Track] = []
-        if fm.fileExists(atPath: them.path) {
+        if let them = SessionFolder.audio("them", in: directory) {
             tracks.append(.init(label: "Them", url: them))
         }
-        if fm.fileExists(atPath: me.path) {
+        if let me = SessionFolder.audio("me", in: directory) {
             let mode: RecordingMode = tracks.isEmpty ? .meeting : .call
             tracks.append(.init(label: mode.micLabel, url: me))
         }
-        guard !tracks.isEmpty else { fail("No them.caf or me.caf in \(directory.path)") }
+        guard !tracks.isEmpty else { fail("No them/me recording (.caf or .m4a) in \(directory.path)") }
 
         do {
             print("transcribing \(tracks.map(\.label).joined(separator: " + "))…")

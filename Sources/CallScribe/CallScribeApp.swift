@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 @main
 struct CallScribeApp: App {
@@ -8,6 +9,7 @@ struct CallScribeApp: App {
     init() {
         if SelfTest.isRequested { SelfTest.run() }
         if Retranscribe.isRequested { Retranscribe.run() }
+        if Maintenance.isRequested { Maintenance.run() }
         let state = AppState()
         _state = StateObject(wrappedValue: state)
         _updater = StateObject(wrappedValue: Updater(state: state))
@@ -60,6 +62,7 @@ struct PanelView: View {
             footer
         }
         .padding(14)
+        .onAppear { state.refreshTitleAvailability() }
         .onReceive(tick) { _ in
             if case .recording(_, let since) = state.status {
                 elapsed = Transcriber.clock(Date().timeIntervalSince(since))
@@ -162,7 +165,7 @@ struct PanelView: View {
             if !state.recent.isEmpty {
                 Menu("Recent Transcripts") {
                     ForEach(state.recent, id: \.self) { url in
-                        Button(url.deletingLastPathComponent().lastPathComponent) { state.open(url) }
+                        Button(SessionFolder.displayName(of: url.deletingLastPathComponent())) { state.open(url) }
                     }
                 }
                 .menuStyle(.borderlessButton)
@@ -180,6 +183,13 @@ struct PanelView: View {
             Toggle("Ask to record when a call starts", isOn: $state.detectCalls)
                 .toggleStyle(.checkbox)
                 .font(.callout)
+
+            if state.titlesAvailable {
+                Toggle("Name recordings with Apple Intelligence", isOn: $state.nameRecordings)
+                    .toggleStyle(.checkbox)
+                    .font(.callout)
+                    .help("Titles each recording on this Mac, e.g. “2026-11-23 13.22.17 – Reform – Challenge-App”. Nothing leaves the Mac.")
+            }
 
             Button("Check for Updates… (v\(updater.currentVersion))") { updater.checkNow() }
                 .buttonStyle(.link)

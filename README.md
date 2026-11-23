@@ -72,13 +72,43 @@ you are recording: **Call ended — stop recording?** **Stop** transcribes right
 away; ignoring it keeps recording, so a false alarm never cuts a call short.
 
 **Stop & Transcribe** when done. A notification appears when the transcript is
-ready. Output lands in `~/Recordings/CallScribe/<date and time>/`:
+ready. Output lands in `~/Recordings/CallScribe/<date and time> – <title>/`:
 
 ```
-them.caf         the far end, untouched
-me.caf           you, untouched
+them.m4a         the far end
+me.m4a           you
 transcript.txt   merged, chronological, labelled
+meta.json        title, short summary, names, to-dos (with Apple Intelligence)
 ```
+
+### Titles
+
+On macOS 26 or later with Apple Intelligence turned on, CallScribe reads the
+transcript with Apple's on-device model and names the folder after the call —
+`2026-11-23 13.22.17 – Reform – Challenge-App` instead of just the date. It runs
+on the Mac like everything else; nothing is sent anywhere. Rename a folder in
+Finder whenever a title is off: keep the date at the front and CallScribe shows
+your name for it.
+
+Everywhere else — macOS 15, a Mac without Apple Intelligence, Apple Intelligence
+turned off or still downloading, or a call it declines to summarise — recordings
+keep their date names, exactly as before. Turn titles off with *Name recordings
+with Apple Intelligence* in the panel.
+
+For recordings made before titles existed:
+
+```sh
+/Applications/CallScribe.app/Contents/MacOS/CallScribe --title-all --dry-run   # show the titles
+/Applications/CallScribe.app/Contents/MacOS/CallScribe --title-all             # rename the folders
+```
+
+### Disk space
+
+While recording, CallScribe writes uncompressed audio (about 1.2 GB per hour),
+because that survives a crash mid-call. Once the transcript exists it is
+replaced by AAC `.m4a` — about 40 MB per hour, the same for speech. Recordings
+from earlier versions are compressed the same way the first time the new version
+starts. A file is only deleted after its compressed copy has been checked.
 
 ## Getting good transcripts
 
@@ -103,7 +133,13 @@ agreement. CallScribe does not announce itself.
 defaults write at.skyline.CallScribe language de          # or "auto"
 defaults write at.skyline.CallScribe recordingsRoot ~/Documents/Calls
 defaults write at.skyline.CallScribe modelPath /path/to/ggml-model.bin
+defaults write at.skyline.CallScribe nameRecordings -bool false   # no titles
+defaults write at.skyline.CallScribe compressAudio -bool false    # keep the raw .caf files
+defaults write at.skyline.CallScribe corrections "Lansing=Lenzing, Kai-Burg=KRAIBURG"
 ```
+
+`corrections` fixes names speech recognition keeps mishearing, as whole words
+and ignoring case, in every new transcript and in the titles.
 
 Read again at the start of every recording — no restart needed.
 
@@ -121,8 +157,8 @@ use, whether permissions were granted, and the measured level of each track. Add
 /Applications/CallScribe.app/Contents/MacOS/CallScribe --transcribe ~/Recordings/CallScribe/"2026-11-10 14.01.18"
 ```
 
-Rebuilds `transcript.txt` from the audio already in a session folder, for a
-recording whose transcription failed or that you repaired by hand.
+Rebuilds `transcript.txt` from the audio already in a session folder (`.caf` or
+`.m4a`), for a recording whose transcription failed or that you repaired by hand.
 
 ## How it works
 
@@ -140,12 +176,21 @@ it: a level gate per track, collapsing of repeated cues, and cross-track echo
 suppression that drops any cue where the *other* track is much louder over the
 same moment — which can never discard speech said while the other side was quiet.
 
+One trap in the level gate: while a call app runs voice processing on the
+built-in microphone (Safari/WebRTC, Teams, Zoom), other apps get the raw,
+unamplified mic array — three channels, speech about 35 dB below normal. Such a
+track is judged against its own room tone instead, lifted, and transcribed in the
+language the other side was heard in.
+
 | Source | Role |
 | --- | --- |
 | `SystemAudioRecorder.swift` | Core Audio process tap |
 | `MicRecorder.swift` | Microphone, separate track |
 | `AudioPrep.swift` | Conversion, level analysis, normalization |
 | `Transcriber.swift` | whisper.cpp, SRT parsing, echo suppression, merge |
+| `Titler.swift` | Titles with the on-device Apple Intelligence model (macOS 26+) |
+| `AudioCompressor.swift` | Raw .caf → AAC .m4a once transcribed |
+| `SessionFolder.swift` | Folder names, titles, finding a session's audio |
 | `ModelStore.swift` | First-run model download |
 | `CallDetector.swift` | Spots other apps opening the microphone |
 | `CallPrompt.swift` | The record / stop popup |

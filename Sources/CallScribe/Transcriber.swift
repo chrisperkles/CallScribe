@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import OSLog
 
 /// Converts each track to whisper's input format, transcribes it, and interleaves
@@ -31,6 +32,8 @@ struct Transcriber {
         var cues: [Cue] = []
         var analyses: [String: AudioPrep.Result] = [:]
         var transcribedAny = false
+        /// What the previous track turned out to be in, when the language is "auto".
+        var heardLanguage: String?
 
         for track in tracks {
             let wav = directory.appendingPathComponent("\(track.label.lowercased())-16k.wav")
@@ -44,10 +47,29 @@ struct Transcriber {
                 continue
             }
 
+            // Whisper guesses the language from a track's first 30 seconds; on a
+            // lifted, very quiet track it guessed English and translated a German
+            // call. Such a track speaks the language the other side was heard in.
+            var language = settings.language
+            if language == "auto", prepared.lifted, let heardLanguage {
+                language = heardLanguage
+                log.info("\(track.label) was lifted; transcribing it as \(heardLanguage, privacy: .public)")
+            }
+
             let prefix = directory.appendingPathComponent(track.label.lowercased())
-            try transcribe(wav: wav, outputPrefix: prefix)
-            cues.append(contentsOf: parseSRT(at: prefix.appendingPathExtension("srt"), speaker: track.label))
+            try transcribe(wav: wav, outputPrefix: prefix, language: language)
+            let trackCues = parseSRT(at: prefix.appendingPathExtension("srt"), speaker: track.label)
+            cues.append(contentsOf: trackCues)
             transcribedAny = true
+
+            if heardLanguage == nil, !prepared.lifted {
+                let recognizer = NLLanguageRecognizer()
+                recognizer.processString(trackCues.map(\.text).joined(separator: " "))
+                if let (code, confidence) = recognizer.languageHypotheses(withMaximum: 1).first, confidence > 0.8 {
+                    // Whisper wants "zh", not NaturalLanguage's "zh-Hans".
+                    heardLanguage = code.rawValue.split(separator: "-").first.map(String.init)
+                }
+            }
 
             try? FileManager.default.removeItem(at: wav)
         }
@@ -87,7 +109,7 @@ struct Transcriber {
 
     // MARK: - Steps
 
-    private func transcribe(wav: URL, outputPrefix: URL) throws {
+    private func transcribe(wav: URL, outputPrefix: URL, language: String) throws {
         var arguments = [
             "-m", modelPath,
             "-f", wav.path,
@@ -95,7 +117,7 @@ struct Transcriber {
             "-of", outputPrefix.path,
             "-t", String(ProcessInfo.processInfo.activeProcessorCount),
             "-np",
-            "-l", settings.language,
+            "-l", language,
         ]
         // Whisper loops and invents dialogue when fed near-silence. Dropping
         // cross-window context (-mc 0) is the single most effective guard, and
@@ -122,7 +144,8 @@ struct Transcriber {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, !Self.isHallucination(text) else { continue }
 
-            cues.append(Cue(start: start, end: end, speaker: speaker, text: text))
+            cues.append(Cue(start: start, end: end, speaker: speaker,
+                            text: Correction.apply(settings.corrections, to: text)))
         }
         return collapseRepeats(cues)
     }

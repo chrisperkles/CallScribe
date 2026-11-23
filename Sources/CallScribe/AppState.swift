@@ -25,6 +25,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Title each recording with Apple Intelligence (read again at every recording).
+    @Published var nameRecordings = UserDefaults.standard.object(forKey: "nameRecordings") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(nameRecordings, forKey: "nameRecordings") }
+    }
+
+    /// False on macOS before 26 and wherever Apple Intelligence is off or not
+    /// ready: recordings then keep their date names and the option stays hidden.
+    @Published private(set) var titlesAvailable = Titler.isAvailable
+
+    /// Apple Intelligence can be switched on, or finish downloading, at any time.
+    func refreshTitleAvailability() {
+        let available = Titler.isAvailable
+        if available != titlesAvailable { titlesAvailable = available }
+    }
+
     private let systemAudio = SystemAudioRecorder()
     private let mic = MicRecorder()
     private let callDetector = CallDetector()
@@ -58,6 +73,16 @@ final class AppState: ObservableObject {
         loadRecent()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         LaunchAtLogin.enableOnFirstRun()
+
+        // Recordings from before compression existed, or one an update or quit
+        // interrupted mid-compression. Only finished sessions (with a transcript)
+        // are touched, and a .caf is only removed once its .m4a checks out.
+        if settings.compressAudio {
+            let root = settings.recordingsRoot
+            Task.detached(priority: .background) {
+                AudioCompressor.compressFinishedSessions(in: root)
+            }
+        }
 
         // Closing the lid mid-recording would record a silent gap at best and,
         // if the audio devices change across sleep, nothing at all afterwards.
@@ -183,7 +208,9 @@ final class AppState: ObservableObject {
 
         status = .transcribing(session: directory.lastPathComponent)
 
-        let settings = self.settings
+        var current = self.settings
+        current.nameRecordings = nameRecordings      // the checkbox as it is now, not at start
+        let settings = current
         guard let modelPath = modelURL?.path else {
             status = .failed("No speech model available.")
             return
@@ -193,18 +220,28 @@ final class AppState: ObservableObject {
             do {
                 let transcriber = Transcriber(settings: settings, modelPath: modelPath)
                 _ = try transcriber.run(tracks: tracks, in: directory)
+
+                // "2026-11-23 13.22.17 – Reform – Challenge-App" where Apple
+                // Intelligence is available; the plain date name everywhere else.
+                let named = await SessionNaming.name(directory, settings: settings)
+                let label = named.title?.title ?? SessionFolder.displayName(of: named.directory)
+
                 await MainActor.run {
                     self.loadRecent()
                     if let captureProblem {
                         // Keep the warning on screen: the transcript exists but has a hole in it.
                         self.status = .failed("Transcript saved, but incomplete. " + captureProblem)
-                        self.notify(title: "Transcript ready, but incomplete", body: captureProblem)
+                        self.notify(title: "Transcript ready, but incomplete", body: label + "\n" + captureProblem)
                     } else {
                         self.status = .idle
-                        self.notify(title: "Transcript ready", body: directory.lastPathComponent)
+                        self.notify(title: "Transcript ready", body: label)
                     }
                     // A call that began while we were busy still deserves the question.
                     self.offerRecording()
+                }
+
+                if settings.compressAudio {
+                    AudioCompressor.compressSession(at: named.directory)
                 }
             } catch {
                 let message = explain(error)

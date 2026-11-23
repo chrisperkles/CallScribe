@@ -15,7 +15,14 @@ enum AudioPrep {
         /// Fraction of 100 ms windows whose RMS clears the noise floor.
         let activeFraction: Float
         /// RMS per 100 ms window, used to tell real speech from speaker bleed.
+        /// Always on the recording's original scale, even when it was lifted.
         let envelope: [Float]
+        /// Whether to transcribe it: `looksLikeSpeech`, or a very quiet track
+        /// rescued by `quietSpeechGain`.
+        let hasSpeech: Bool
+        /// Transcribed only after a large lift (see `quietSpeechGain`). Whisper's
+        /// language guess is unreliable on such a track.
+        let lifted: Bool
 
         static let windowSeconds = 0.1
 
@@ -32,8 +39,13 @@ enum AudioPrep {
         /// rather than transcribed.
         /// Deliberately permissive: dropping a quiet speaker entirely is worse
         /// than a few junk lines, and bleed is removed later by comparing tracks.
-        var hasSpeech: Bool {
+        static func looksLikeSpeech(duration: TimeInterval, peak: Float, activeFraction: Float) -> Bool {
             duration >= 1.0 && peak > 0.02 && activeFraction > 0.005
+        }
+
+        func withSpeech(_ speech: Bool, lifted: Bool = false) -> Result {
+            Result(url: url, duration: duration, peak: peak, activeFraction: activeFraction,
+                   envelope: envelope, hasSpeech: speech, lifted: lifted)
         }
     }
 
@@ -54,6 +66,49 @@ enum AudioPrep {
     static let whisperSampleRate = 16000.0
 
     static func prepare(_ source: URL, to destination: URL) throws -> Result {
+        let measured = try convert(source, to: destination, gain: 1)
+        if Result.looksLikeSpeech(duration: measured.duration, peak: measured.peak,
+                                  activeFraction: measured.activeFraction) {
+            // People sitting around a table land far below the levels whisper was
+            // trained on, and quiet input is a major source of dropped words. The
+            // envelope stays on the original scale, so cross-track bleed
+            // comparisons are unaffected by this.
+            // Only lift a track that clearly contains sustained speech: amplifying
+            // a sparse, noisy signal makes whisper's output worse, not better.
+            if measured.activeFraction > 0.10, let gain = normalizationGain(peak: measured.peak) {
+                try amplify(destination, by: gain)
+            }
+            return measured.withSpeech(true)
+        }
+
+        // Too quiet for the test above. Lift it before the 16-bit conversion
+        // (so the quiet speech keeps its detail) and transcribe after all.
+        if let gain = quietSpeechGain(for: measured) {
+            _ = try convert(source, to: destination, gain: gain)
+            return measured.withSpeech(true, lifted: true)
+        }
+        return measured.withSpeech(false)
+    }
+
+    /// The built-in microphone hands other apps its raw, unamplified mic array
+    /// while a call app (Safari, Teams, Zoom) runs voice processing on it:
+    /// speech then sits ~35 dB below normal and never clears the absolute
+    /// noise floor, so the whole side of the call was dropped. Judged against
+    /// its own room tone instead, such a track looks like any other speech
+    /// track (measured: 57 % active vs. 39–55 % on normal calls), while true
+    /// silence and room tone don't.
+    private static func quietSpeechGain(for result: Result) -> Float? {
+        guard result.duration >= 1.0, result.peak > 0.003, result.peak < 0.5,
+              !result.envelope.isEmpty else { return nil }
+        let sorted = result.envelope.sorted()
+        let roomTone = max(sorted[sorted.count / 10], 0.00003)
+        let active = Float(result.envelope.filter { $0 > roomTone * 8 }.count) / Float(result.envelope.count)
+        guard active >= 0.15 else { return nil }
+        return min(0.5 / result.peak, 100)
+    }
+
+    /// Converts to whisper's format with a constant gain and measures what it wrote.
+    private static func convert(_ source: URL, to destination: URL, gain: Float) throws -> Result {
         guard let input = try? AVAudioFile(forReading: source) else {
             throw PrepError.cannotOpen(source)
         }
@@ -111,6 +166,15 @@ enum AudioPrep {
                     statusOut.pointee = .endOfStream
                     return nil
                 }
+                if gain != 1, let planes = buffer.floatChannelData {
+                    let format = buffer.format
+                    let planeCount = format.isInterleaved ? 1 : Int(format.channelCount)
+                    let samplesPerPlane = Int(buffer.frameLength) * (format.isInterleaved ? Int(format.channelCount) : 1)
+                    for plane in 0..<planeCount {
+                        let samples = planes[plane]
+                        for index in 0..<samplesPerPlane { samples[index] *= gain }
+                    }
+                }
                 statusOut.pointee = .haveData
                 return buffer
             }
@@ -127,24 +191,14 @@ enum AudioPrep {
             }
         }
 
-        let result = Result(
+        return Result(
             url: destination,
             duration: Double(meter.totalFrames) / whisperSampleRate,
             peak: meter.peak,
             activeFraction: meter.activeFraction,
-            envelope: meter.envelope)
-
-        // People sitting around a table land far below the levels whisper was
-        // trained on, and quiet input is a major source of dropped words. The
-        // envelope above stays on the original scale, so cross-track bleed
-        // comparisons are unaffected by this.
-        // Only lift a track that clearly contains sustained speech: amplifying
-        // a sparse, noisy signal makes whisper's output worse, not better.
-        if result.hasSpeech, result.activeFraction > 0.10,
-           let gain = normalizationGain(peak: result.peak) {
-            try amplify(destination, by: gain)
-        }
-        return result
+            envelope: meter.envelope,
+            hasSpeech: false,
+            lifted: false)
     }
 
     /// How much to lift a quiet recording, or nil if it's already loud enough.
