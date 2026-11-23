@@ -3,6 +3,15 @@
   <channel>
     <title>CallScribe</title>
     <item>
+      <title>1.2.0</title>
+      <pubDate>Mon, 23 Nov 2026 15:48:19 GMT</pubDate>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul><li><b>Recordings get names.</b> On macOS 26 with Apple Intelligence, each recording is titled on your Mac, e.g. “2026-11-23 13.22.17 – Reform – Challenge-App”, with a short summary and to-dos in meta.json. Elsewhere recordings keep their date names, as before.</li><li><b>~30× less disk space.</b> Once transcribed, the audio is stored as AAC (.m4a) — about 40 MB per hour instead of 1.2 GB. Earlier recordings are compressed the first time this version starts.</li><li><b>Your side of browser calls is back.</b> During calls in Safari (and other apps using voice processing) your microphone was recorded far too quietly and left out of the transcript. It is now picked up.</li></ul>]]></description>
+      <enclosure url="https://github.com/chrisperkles/CallScribe/releases/download/v1.2.0/CallScribe-1.2.0.dmg" sparkle:edSignature="x+CUmEG/lVk3OCp/bgI0txQ59EGtayUmQ7E8YjqyIkgHdrfbkLGjEpecDb4q2BhIKzfO5EIYNO11566T01nEDg==" length="4633540" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>1.1.2</title>
       <pubDate>Tue, 10 Nov 2026 18:38:32 GMT</pubDate>
       <sparkle:version>15</sparkle:version>
