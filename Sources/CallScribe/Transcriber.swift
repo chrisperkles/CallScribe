@@ -47,14 +47,7 @@ struct Transcriber {
                 continue
             }
 
-            // Whisper guesses the language from a track's first 30 seconds; on a
-            // lifted, very quiet track it guessed English and translated a German
-            // call. Such a track speaks the language the other side was heard in.
-            var language = settings.language
-            if language == "auto", prepared.lifted, let heardLanguage {
-                language = heardLanguage
-                log.info("\(track.label) was lifted; transcribing it as \(heardLanguage, privacy: .public)")
-            }
+            let language = chooseLanguage(of: track.label, prepared: prepared, wav: wav, heardLanguage: heardLanguage)
 
             let prefix = directory.appendingPathComponent(track.label.lowercased())
             try transcribe(wav: wav, outputPrefix: prefix, language: language)
@@ -63,11 +56,15 @@ struct Transcriber {
             transcribedAny = true
 
             if heardLanguage == nil, !prepared.lifted {
-                let recognizer = NLLanguageRecognizer()
-                recognizer.processString(trackCues.map(\.text).joined(separator: " "))
-                if let (code, confidence) = recognizer.languageHypotheses(withMaximum: 1).first, confidence > 0.8 {
-                    // Whisper wants "zh", not NaturalLanguage's "zh-Hans".
-                    heardLanguage = code.rawValue.split(separator: "-").first.map(String.init)
+                if language != "auto" {
+                    heardLanguage = language
+                } else {
+                    let recognizer = NLLanguageRecognizer()
+                    recognizer.processString(trackCues.map(\.text).joined(separator: " "))
+                    if let (code, confidence) = recognizer.languageHypotheses(withMaximum: 1).first, confidence > 0.8 {
+                        // Whisper wants "zh", not NaturalLanguage's "zh-Hans".
+                        heardLanguage = code.rawValue.split(separator: "-").first.map(String.init)
+                    }
                 }
             }
 
@@ -84,9 +81,16 @@ struct Transcriber {
     }
 
     /// On speakerphone the microphone re-records the far end, and whisper turns
-    /// that faint echo into invented dialogue. A cue is bleed when another track
-    /// is much louder over the same moment — which, unlike a loudness threshold,
-    /// can never discard speech said while the other side was quiet.
+    /// that faint echo into invented dialogue. A mic cue is bleed when another
+    /// track is much louder over the same moment — which, unlike a loudness
+    /// threshold, can never discard speech said while the other side was quiet.
+    ///
+    /// The far end's track is system audio, so loudness alone proves nothing
+    /// there: it only ever holds the user's voice when a far end without echo
+    /// cancellation plays it back, and whisper then writes down the same words.
+    /// Judged by loudness, one call lost eight real lines said while the user
+    /// talked, and all recordings together 366 — questions included — against
+    /// 105 true echoes.
     private func suppressBleed(in cues: [Cue], analyses: [String: AudioPrep.Result]) -> [Cue] {
         guard analyses.count > 1 else { return cues }
 
@@ -99,15 +103,91 @@ struct Transcriber {
                 .map { $0.value.energy(from: cue.start, to: cue.end) }
                 .max() ?? 0
 
-            let isEcho = loudestOther > ownEnergy * 3
+            var isEcho = loudestOther > ownEnergy * 3
+            if isEcho, cue.speaker == Self.systemAudioLabel {
+                let words = Self.words(cue.text)
+                let heard = cues
+                    .filter { $0.speaker != cue.speaker && $0.start < cue.end && $0.end > cue.start }
+                    .reduce(into: Set<String>()) { $0.formUnion(Self.words($1.text)) }
+                isEcho = !words.isEmpty && Double(words.intersection(heard).count) >= Double(words.count) / 2
+            }
             if isEcho {
-                log.info("Dropping bleed on \(cue.speaker): \(cue.text)")
+                log.info("Dropping bleed on \(cue.speaker, privacy: .public): \(cue.text)")
             }
             return !isEcho
         }
     }
 
+    /// The label of the system-audio track: the far end of a call.
+    static let systemAudioLabel = "Them"
+
+    private static func words(_ text: String) -> Set<String> {
+        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    }
+
     // MARK: - Steps
+
+    /// The language to transcribe a track in.
+    ///
+    /// Left to itself, whisper guesses from a track's first 30 seconds, which on
+    /// a call is hellos, waiting or silence: a German call came out as Icelandic
+    /// on one side and Spanish on the other (2026-11-24), while 30 seconds of
+    /// actual speech from the same tracks read as German at p = 0.999. So the
+    /// guess is made here, on the busiest stretches, and only the languages set
+    /// in the panel can win.
+    private func chooseLanguage(of label: String, prepared: AudioPrep.Result, wav: URL,
+                                heardLanguage: String?) -> String {
+        let allowed = settings.languages
+        if allowed.count == 1 { return allowed[0] }
+
+        // A lifted, very quiet track was guessed as English and got translated;
+        // it speaks the language the other side was heard in.
+        if prepared.lifted, let heardLanguage {
+            log.info("\(label, privacy: .public) was lifted; transcribing it as \(heardLanguage, privacy: .public)")
+            return heardLanguage
+        }
+
+        var votes: [String: Double] = [:]
+        let stretches = AudioPrep.busiestStretches(in: prepared, seconds: 30, count: 3)
+        for (index, start) in stretches.enumerated() {
+            let excerpt = wav.deletingLastPathComponent()
+                .appendingPathComponent("\(label.lowercased())-language-\(index).wav")
+            defer { try? FileManager.default.removeItem(at: excerpt) }
+            do {
+                try AudioPrep.excerpt(of: wav, from: start, seconds: 30, to: excerpt)
+                if let (code, probability) = try detectLanguage(in: excerpt) {
+                    votes[code, default: 0] += probability
+                    log.info("\(label, privacy: .public) at \(Int(start)) s sounds like \(code, privacy: .public) (p = \(probability))")
+                }
+            } catch {
+                log.error("Language check on \(label, privacy: .public) failed: \(explain(error), privacy: .public)")
+            }
+        }
+
+        let eligible = allowed.isEmpty ? votes : votes.filter { allowed.contains($0.key) }
+        let choice = eligible.max { $0.value < $1.value }?.key ?? allowed.first ?? "auto"
+        log.info("\(label, privacy: .public): transcribing as \(choice, privacy: .public)")
+        return choice
+    }
+
+    /// Whisper's guess for the first 30 seconds of a file, with its probability.
+    private func detectLanguage(in wav: URL) throws -> (String, Double)? {
+        let output = try Shell.run(settings.whisperPath, [
+            "-m", modelPath,
+            "-f", wav.path,
+            "-t", String(ProcessInfo.processInfo.activeProcessorCount),
+            "-l", "auto",
+            "-dl",
+        ])
+        // "whisper_full_with_state: auto-detected language: de (p = 0.999049)"
+        let pattern = #"auto-detected language: ([a-z]+) \(p = ([0-9.]+)\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+              let code = Range(match.range(at: 1), in: output).map({ String(output[$0]) }),
+              let probability = Range(match.range(at: 2), in: output).flatMap({ Double(output[$0]) })
+        else { return nil }
+        return (code, probability)
+    }
 
     private func transcribe(wav: URL, outputPrefix: URL, language: String) throws {
         var arguments = [
@@ -142,7 +222,7 @@ struct Transcriber {
 
             let text = lines[(arrowIndex + 1)...].joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, !Self.isHallucination(text) else { continue }
+            guard !text.isEmpty, !Self.isHallucination(text, duration: end - start) else { continue }
 
             cues.append(Cue(start: start, end: end, speaker: speaker,
                             text: Correction.apply(settings.corrections, to: text)))
@@ -180,10 +260,18 @@ struct Transcriber {
         "thank you.", "thanks for watching!", "you", "bye.", ".", "so",
         "untertitel von stephanie geiges", "untertitelung des zdf, 2020",
         "subtitles by the amara.org community", "amara.org", "copyright wdr",
+        "wdr mediagroup gmbh im auftrag des wdr", "...",
+        "vertraue und glaube, es hilft, es heilt die göttliche kraft!",
     ]
 
-    static func isHallucination(_ text: String) -> Bool {
-        junk.contains(text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
+    /// Thanks stretched over a whole 30-second decoding window are whisper
+    /// talking over silence: across all recordings "Vielen Dank." lasted 25 s
+    /// or more 155 times, and less only 4 times.
+    private static let windowFillers: Set<String> = ["vielen dank.", "danke.", "danke schön.", "thanks."]
+
+    static func isHallucination(_ text: String, duration: TimeInterval = 0) -> Bool {
+        let key = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return junk.contains(key) || (duration >= 25 && windowFillers.contains(key))
     }
 
     private func render(cues: [Cue]) -> String {

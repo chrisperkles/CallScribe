@@ -30,6 +30,14 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(nameRecordings, forKey: "nameRecordings") }
     }
 
+    /// Languages the calls are in (see `Settings.languages`); empty = any.
+    @Published var languages = Settings.load().languages {
+        didSet {
+            UserDefaults.standard.set(languages.joined(separator: ","), forKey: "languages")
+            UserDefaults.standard.removeObject(forKey: "language")   // the older key would override the panel
+        }
+    }
+
     /// False on macOS before 26 and wherever Apple Intelligence is off or not
     /// ready: recordings then keep their date names and the option stays hidden.
     @Published private(set) var titlesAvailable = Titler.isAvailable
@@ -210,6 +218,7 @@ final class AppState: ObservableObject {
 
         var current = self.settings
         current.nameRecordings = nameRecordings      // the checkbox as it is now, not at start
+        current.languages = languages
         let settings = current
         guard let modelPath = modelURL?.path else {
             status = .failed("No speech model available.")

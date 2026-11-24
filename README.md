@@ -118,8 +118,10 @@ starts. A file is only deleted after its compressed copy has been checked.
 - **In a meeting room, put the Mac near whoever is talking**, or use an external
   mic. A laptop at the end of a long table gives thin audio, and thin audio
   transcribes badly.
-- Language is auto-detected. Pinning it helps if your calls are always German:
-  `defaults write at.skyline.CallScribe language de`
+- **Set your languages** in the panel (Languages: German, English, …). With one
+  language everything is transcribed in it; with several, each side of the call
+  gets whichever of them it sounds like. Left on "any", a call can come out in
+  a language nobody spoke.
 
 ## Before recording other people
 
@@ -130,7 +132,8 @@ agreement. CallScribe does not announce itself.
 ## Settings
 
 ```sh
-defaults write at.skyline.CallScribe language de          # or "auto"
+defaults write at.skyline.CallScribe languages "de,en"     # what the panel sets; "" = any
+defaults write at.skyline.CallScribe language de           # older key: always this one, overrides the panel
 defaults write at.skyline.CallScribe recordingsRoot ~/Documents/Calls
 defaults write at.skyline.CallScribe modelPath /path/to/ggml-model.bin
 defaults write at.skyline.CallScribe nameRecordings -bool false   # no titles
@@ -181,6 +184,13 @@ built-in microphone (Safari/WebRTC, Teams, Zoom), other apps get the raw,
 unamplified mic array — three channels, speech about 35 dB below normal. Such a
 track is judged against its own room tone instead, lifted, and transcribed in the
 language the other side was heard in.
+
+Whisper's own language guess listens to a track's first 30 seconds only, which
+on a call is hellos, waiting or silence; one German call came out Icelandic on
+one side and Spanish on the other. CallScribe instead cuts each track's three
+busiest 30-second stretches (most time within 20 dB of its loudest speech), asks
+whisper for the language of each, and lets only the languages set in the panel
+win. With a single language set, there is no guessing at all.
 
 | Source | Role |
 | --- | --- |

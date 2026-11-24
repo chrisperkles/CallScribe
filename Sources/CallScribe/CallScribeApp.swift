@@ -184,6 +184,26 @@ struct PanelView: View {
                 .toggleStyle(.checkbox)
                 .font(.callout)
 
+            Menu {
+                ForEach(SpokenLanguage.offered, id: \.self) { code in
+                    Toggle(SpokenLanguage.name(code), isOn: Binding(
+                        get: { state.languages.contains(code) },
+                        set: { on in
+                            if on { state.languages.append(code) } else { state.languages.removeAll { $0 == code } }
+                        }))
+                }
+                Divider()
+                Button("Any Language") { state.languages = [] }
+            } label: {
+                Text("Languages: " + (state.languages.isEmpty
+                    ? "any"
+                    : state.languages.map(SpokenLanguage.name).joined(separator: ", ")))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .font(.callout)
+            .help("The languages your calls are in. With one, everything is transcribed in it; with several, each side gets whichever of them it sounds like.")
+
             if state.titlesAvailable {
                 Toggle("Name recordings with Apple Intelligence", isOn: $state.nameRecordings)
                     .toggleStyle(.checkbox)

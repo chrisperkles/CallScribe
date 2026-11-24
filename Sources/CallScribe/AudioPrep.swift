@@ -107,6 +107,54 @@ enum AudioPrep {
         return min(0.5 / result.peak, 100)
     }
 
+    /// Start times of up to `count` non-overlapping stretches of `seconds` where
+    /// the track most often comes within 20 dB of its loudest speech — the
+    /// densest talking — busiest first. Room tone alone is no yardstick: the
+    /// far side's comfort noise cleared it in 74 % of all windows, hundreds of
+    /// stretches tied, and the ones picked were silence. Digital silence is
+    /// ignored, so a track whose mic died halfway still finds its speech.
+    /// `[0]` for a track shorter than one stretch.
+    static func busiestStretches(in result: Result, seconds: TimeInterval, count: Int) -> [TimeInterval] {
+        let envelope = result.envelope
+        let length = Int(seconds / Result.windowSeconds)
+        guard envelope.count > length else { return [0] }
+
+        let audible = envelope.filter { $0 > 0.00001 }.sorted()
+        guard !audible.isEmpty else { return [0] }
+        let roomTone = max(audible[audible.count / 10], 0.00003)
+        let loud = audible[audible.count * 99 / 100]
+        let threshold = max(roomTone * 8, loud / 10)
+        var active = [0]    // running count of windows above the threshold
+        active.reserveCapacity(envelope.count + 1)
+        for value in envelope { active.append(active[active.count - 1] + (value > threshold ? 1 : 0)) }
+
+        let step = Int(5 / Result.windowSeconds)
+        let ranked = stride(from: 0, through: envelope.count - length, by: step)
+            .map { (start: $0, score: active[$0 + length] - active[$0]) }
+            .sorted { $0.score > $1.score }
+
+        var picked: [Int] = []
+        for candidate in ranked where picked.count < count {
+            if picked.allSatisfy({ abs($0 - candidate.start) >= length }) { picked.append(candidate.start) }
+        }
+        return picked.map { TimeInterval($0) * Result.windowSeconds }
+    }
+
+    /// Copies `seconds` of a file from `start` into a new file of the same format.
+    static func excerpt(of source: URL, from start: TimeInterval, seconds: TimeInterval, to destination: URL) throws {
+        let input = try AVAudioFile(forReading: source)
+        let format = input.processingFormat
+        input.framePosition = min(AVAudioFramePosition(start * format.sampleRate), input.length)
+        let frames = AVAudioFrameCount(min(AVAudioFramePosition(seconds * format.sampleRate),
+                                           input.length - input.framePosition))
+        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+            throw PrepError.conversion("Nothing to copy at \(Int(start)) s of \(source.lastPathComponent)")
+        }
+        try input.read(into: buffer, frameCount: frames)
+        let output = try AVAudioFile(forWriting: destination, settings: input.fileFormat.settings)
+        try output.write(from: buffer)
+    }
+
     /// Converts to whisper's format with a constant gain and measures what it wrote.
     private static func convert(_ source: URL, to destination: URL, gain: Float) throws -> Result {
         guard let input = try? AVAudioFile(forReading: source) else {

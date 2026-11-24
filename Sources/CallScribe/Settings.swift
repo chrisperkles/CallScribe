@@ -31,7 +31,10 @@ enum RecordingMode: String, CaseIterable, Identifiable {
 struct Settings {
     var whisperPath: String
     var modelPath: String?
-    var language: String
+    /// Languages the calls are in, as whisper codes ("de", "en"). One: every
+    /// track is transcribed in it. Several: each track in whichever of them it
+    /// sounds like. None: any language.
+    var languages: [String]
     var recordingsRoot: URL
     /// Ask the on-device Apple Intelligence model for a title and put it in the
     /// folder name. Without Apple Intelligence the folder keeps its date name.
@@ -48,13 +51,22 @@ struct Settings {
         return Settings(
             whisperPath: defaults.string(forKey: "whisperPath") ?? bundledWhisper(),
             modelPath: defaults.string(forKey: "modelPath"),
-            language: defaults.string(forKey: "language") ?? "auto",
+            languages: spokenLanguages(defaults),
             recordingsRoot: defaults.string(forKey: "recordingsRoot").map { URL(fileURLWithPath: $0) }
                 ?? home.appendingPathComponent("Recordings/CallScribe"),
             nameRecordings: defaults.object(forKey: "nameRecordings") as? Bool ?? true,
             compressAudio: defaults.object(forKey: "compressAudio") as? Bool ?? true,
             corrections: Correction.parse(defaults.string(forKey: "corrections") ?? "")
         )
+    }
+
+    /// The older single `language` key wins when set (`defaults write … language de`,
+    /// or `-language de` on the command line); the panel writes `languages`.
+    private static func spokenLanguages(_ defaults: UserDefaults) -> [String] {
+        if let single = defaults.string(forKey: "language"), !SpokenLanguage.parse(single).isEmpty {
+            return SpokenLanguage.parse(single)
+        }
+        return SpokenLanguage.parse(defaults.string(forKey: "languages") ?? "")
     }
 
     /// The statically linked whisper-cli shipped inside the app, falling back to
@@ -94,6 +106,24 @@ enum Timestamps {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = format
         return formatter.date(from: String(name.prefix(SessionFolder.stampLength)))
+    }
+}
+
+/// The languages offered in the panel. `defaults write at.skyline.CallScribe
+/// languages "de,en"` takes any of whisper's codes.
+enum SpokenLanguage {
+    static let offered = ["de", "en", "fr", "it", "es", "pl", "nl", "pt"]
+
+    static func name(_ code: String) -> String {
+        Locale(identifier: "en").localizedString(forLanguageCode: code) ?? code
+    }
+
+    /// "de, en" → ["de", "en"]; "auto" and repeats dropped.
+    static func parse(_ text: String) -> [String] {
+        var seen: Set<String> = []
+        return text.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isWhitespace })
+            .map { $0.lowercased() }
+            .filter { $0 != "auto" && seen.insert($0).inserted }
     }
 }
 
