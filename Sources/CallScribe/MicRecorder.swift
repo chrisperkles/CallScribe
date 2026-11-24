@@ -119,6 +119,16 @@ final class MicRecorder: @unchecked Sendable {
         let converter = format == file.processingFormat
             ? nil
             : AVAudioConverter(from: format, to: file.processingFormat)
+        // A 3-channel input (the built-in mic array while a call app runs voice
+        // processing on it) has a discrete layout the converter can't map onto
+        // mono: it leaves the channel map at [-1] and writes digital silence
+        // without an error. 47 minutes of a call were lost that way after
+        // AirPods disconnected (2026-11-24). Take the first input channel.
+        if let converter, converter.channelMap.contains(-1) {
+            let last = Int(format.channelCount) - 1
+            converter.channelMap = (0..<Int(file.processingFormat.channelCount)).map { min($0, last) as NSNumber }
+            log.notice("Mic switched to \(format.channelCount) channels; recording channel 1")
+        }
 
         // The block holds the file itself rather than reading `self.file`, so
         // a buffer still in flight after `stop()` never races the property.
